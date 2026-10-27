@@ -7,7 +7,7 @@
  *     section: string;    heading it appears under (global settings only)
  *     key: string;        storage key, "group.snake_name"
  *     label: string;
- *     type: 'select' | 'text' | 'password' | 'number' | 'checkbox' | 'list' | 'features';
+ *     type: 'select' | 'text' | 'password' | 'number' | 'checkbox' | 'list' | 'textarea' | 'features';
  *     options: (string | { value, label })[];   for select
  *     default: any;
  *     help: string;       optional hint under the field
@@ -19,18 +19,32 @@ import { EVERY_OPTIONS } from './updater.js';
 
 // Global settings, stored flat under chrome.storage.local "settings".
 export const SETTINGS = [
+    { section: 'General', key: 'general.trash', label: 'Move deleted scripts to the trash', type: 'checkbox', default: true,
+        help: 'Restore them (with their values) from the Trash section below. Off: deleting is final.' },
+    { section: 'General', key: 'install.detect_urls', label: 'Offer to install .user.js links I open', type: 'checkbox', default: true,
+        help: 'Opening a link to a userscript (e.g. on Greasy Fork or GitHub) opens Moss\'s install dialog.' },
+
     { section: 'New scripts', key: 'new.sandbox', label: 'Default @sandbox', type: 'select', options: SANDBOXES, default: 'isolated' },
     { section: 'New scripts', key: 'new.run_at', label: 'Default @run-at', type: 'select', options: RUN_AT_VALUES, default: 'document-idle' },
     { section: 'New scripts', key: 'new.namespace', label: 'Default @namespace', type: 'text', default: 'moss.local' },
     { section: 'New scripts', key: 'new.folder', label: 'Default @folder', type: 'text', default: '' },
     { section: 'New scripts', key: 'new.uses', label: 'Default @use lines', type: 'list', default: ['moss/ui/toast as toast'],
         help: 'One module per line, e.g. "moss/ui as ui".' },
+    { section: 'New scripts', key: 'new.template', label: 'New script template', type: 'textarea', default: '',
+        help: 'Empty: Moss builds one from the defaults above. Placeholders: <$NAME$> <$URL$> <$MATCH$> <$DATE$> <$NAMESPACE$>.' },
 
     { section: 'Security', key: 'security.chrome_namespaces', label: 'chrome.* namespaces scripts may request', type: 'list',
         default: Object.keys(CHROME_PERMISSION),
         help: 'A script still needs "@grant chrome.<namespace>". Namespaces beyond these need the matching permission in manifest.json.' },
     { section: 'Security', key: 'security.require_grants', label: 'Require @grant for GM_xmlhttpRequest and GM_download', type: 'checkbox', default: true },
     { section: 'Security', key: 'security.require_connect', label: 'Require @connect for cross-origin requests', type: 'checkbox', default: false },
+    { section: 'Security', key: 'security.blocked_pages', label: 'Never run scripts on these pages', type: 'list', default: [],
+        help: 'One per line: match patterns (https://*.bank.com/*), globs (*paypal.com/*) or /regex/. Applies to every script.' },
+    { section: 'Security', key: 'security.sri', label: 'Subresource integrity (#sha256=… on @require / @resource)', type: 'select',
+        options: [{ value: 'validate', label: 'Check hashes' }, { value: 'ignore', label: 'Ignore hashes' }], default: 'validate' },
+    { section: 'Security', key: 'security.cookies', label: 'GM_cookie may see', type: 'select',
+        options: [{ value: 'no_httponly', label: 'All but HttpOnly cookies' }, { value: 'all', label: 'All cookies' }, { value: 'none', label: 'No cookies' }],
+        default: 'no_httponly' },
 
     { section: 'Runtime', key: 'runtime.strict_default', label: 'Run every script in strict mode', type: 'checkbox', default: false,
         help: 'Recommended for your own scripts — add "// @strict" to the header instead to choose per script. Off by default because many imported scripts are written in sloppy mode.' },
@@ -42,6 +56,26 @@ export const SETTINGS = [
     { section: 'Runtime', key: 'runtime.keepalive', label: 'Keep background scripts alive', type: 'checkbox', default: true,
         help: 'Needed for background scripts that listen to browser events.' },
 
+    { section: 'Popup', key: 'popup.hide_disabled', label: 'Hide disabled scripts', type: 'checkbox', default: false },
+    { section: 'Popup', key: 'popup.badge', label: 'Toolbar icon badge', type: 'select',
+        options: [
+            { value: 'running', label: 'Number of scripts running on the tab' },
+            { value: 'errors', label: 'Only "!" when a script fails' },
+            { value: 'none', label: 'Nothing' },
+        ],
+        default: 'running',
+        help: 'A tab where a script failed shows its count in red.' },
+    { section: 'Popup', key: 'menu.context_menu', label: 'Show menu commands in the right-click menu', type: 'checkbox', default: true,
+        help: 'Scripts with "@run-at context-menu" are always listed there.' },
+    { section: 'Popup', key: 'popup.on_toggle', label: 'When I switch a script (or Moss) on or off', type: 'select',
+        options: [
+            { value: 'reload', label: 'Reload the page' },
+            { value: 'button', label: 'Show a "Reload page" button' },
+            { value: 'nothing', label: 'Do nothing' },
+        ],
+        default: 'reload',
+        help: 'Page scripts only take effect on the next page load. Background scripts restart by themselves, so switching one never reloads the page.' },
+
     { section: 'Updates', key: 'update.auto_by_default', label: 'Auto-update newly imported scripts', type: 'checkbox', default: true },
     { section: 'Updates', key: 'update.every', label: 'Default update check', type: 'select', options: EVERY_OPTIONS, default: 360,
         help: 'Each script can pick its own interval in its Options tab.' },
@@ -49,6 +83,7 @@ export const SETTINGS = [
         help: 'Off: any change at the source is pulled in. "↻ Update" always fetches the latest.' },
     { section: 'Updates', key: 'update.overwrite_local', label: 'Auto-update scripts I have edited here', type: 'checkbox', default: false,
         help: 'Off: a script you changed in Moss is left alone and marked "edited locally".' },
+    { section: 'Updates', key: 'update.disabled_scripts', label: 'Update disabled scripts too', type: 'checkbox', default: true },
     { section: 'Updates', key: 'update.notify', label: 'Notify me when a script is updated', type: 'checkbox', default: true },
     { section: 'GitHub', key: 'github.token', label: 'GitHub token (optional)', type: 'password', default: '',
         help: 'Only needed for private repos, or if you hit GitHub\'s rate limit. A fine-grained token with read-only "Contents" access is enough. Stored in this browser only.' },
@@ -57,9 +92,16 @@ export const SETTINGS = [
     { section: 'Editor', key: 'editor.tab_size', label: 'Tab width', type: 'number', default: 4 },
     { section: 'Editor', key: 'editor.wrap', label: 'Wrap long lines', type: 'checkbox', default: false },
     { section: 'Editor', key: 'editor.theme', label: 'Dashboard theme', type: 'select', options: ['auto', 'light', 'dark'], default: 'auto' },
+    { section: 'Editor', key: 'editor.indent_with', label: 'Indent with', type: 'select', options: ['spaces', 'tabs'], default: 'spaces' },
+    { section: 'Editor', key: 'editor.trim_trailing', label: 'Trim trailing whitespace when saving', type: 'checkbox', default: false },
+    { section: 'Editor', key: 'editor.save_on_blur', label: 'Save when the editor loses focus', type: 'checkbox', default: false },
+    { section: 'Editor', key: 'editor.keys', label: 'Custom shortcuts', type: 'list', default: [],
+        help: 'One per line, "Keys = command", e.g. "Ctrl-Shift-K = delete_line". Use "Keys = none" to free a shortcut. The commands and defaults are listed in Docs → Editor shortcuts.' },
 
     { section: 'Export', key: 'export.include_source', label: 'Include the original .user.js', type: 'checkbox', default: true },
     { section: 'Export', key: 'export.include_readme', label: 'Include a README', type: 'checkbox', default: true },
+    { section: 'Backup', key: 'backup.include_externals', label: 'Include downloaded @require / @resource files in backups', type: 'checkbox', default: false,
+        help: 'Makes the backup bigger, but restores work offline.' },
     { section: 'Export', key: 'export.review_manifest', label: 'Let me edit manifest.json before downloading', type: 'checkbox', default: true },
 ];
 
@@ -105,5 +147,6 @@ export function host_policy(settings) {
         chrome_namespaces: settings['security.chrome_namespaces'],
         require_grants: settings['security.require_grants'],
         require_connect: settings['security.require_connect'],
+        cookies: settings['security.cookies'],
     };
 }

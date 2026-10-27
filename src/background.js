@@ -21,8 +21,11 @@ import './shared/host/menu.js';
 import './shared/host/tabs.js';
 import './shared/host/download.js';
 import './shared/host/chrome.js';
-import { build, build_relay, plan } from './lib/bundler.js';
-import { parse_meta } from './lib/meta.js';
+import './shared/host/window.js';
+import './shared/host/tab.js';
+import './shared/host/cookie.js';
+import { build, build_relay, plan, with_blocked_pages } from './lib/bundler.js';
+import { parse_meta, url_matches } from './lib/meta.js';
 import { migrate_state, upgrade_examples, SCHEMA_VERSION } from './lib/migrate.js';
 import { missing_permissions } from './lib/permissions.js';
 import { host_policy, resolve_settings } from './lib/settings.js';
@@ -34,6 +37,9 @@ const RUNNER = 'src/runner/offscreen.html';
 const EXAMPLES = ['page-tools.user.js', 'fetch-logger.user.js'];
 const EXAMPLE_MODULES = { 'utils/text': 'src/examples/utils-text.js' };
 const UPDATE_ALARM = 'moss-updates';
+const USER_JS_RE = /^https?:\/\/[^?#]+\.user\.js(?:[?#].*)?$/i;
+const BADGE_COLOR = '#2f7d4f';
+const ERROR_COLOR = '#c0392b';
 
 let state = null;          // Promise<struct state> | null
 let booting = null;        // Promise | null
@@ -134,15 +140,22 @@ let error_writes = Promise.resolve();
  * record_error(script, message) — keep the latest runtime errors per script for the
  * popup and dashboard, and put a red "!" on the toolbar icon
  */
-function record_error(script, message) {
+function record_error(script, message, conn) {
     error_writes = error_writes.then(async function () {
         const got = await chrome.storage.session.get('script_errors');
         const errors = got.script_errors || {};
         const list = [{ at: Date.now(), message: message }].concat(errors[script.id] || []);
         errors[script.id] = list.slice(0, 5);
         await chrome.storage.session.set({ script_errors: errors });
-        await chrome.action.setBadgeBackgroundColor({ color: '#c0392b' });
-        await chrome.action.setBadgeText({ text: '!' });
+        const mode = (await get_state()).settings['popup.badge'];
+        const tab_id = conn && conn.tab_id !== null && conn.tab_id !== undefined ? conn.tab_id : null;
+        if (mode === 'running' && tab_id !== null) {
+            tabs_with_errors.add(tab_id);
+            await refresh_badge(tab_id);
+        } else if (mode !== 'none') {
+            await chrome.action.setBadgeBackgroundColor({ color: ERROR_COLOR });
+            await chrome.action.setBadgeText({ text: '!' });
+        }
     }).catch(function () {});
 }
 
@@ -163,7 +176,7 @@ function refresh_snapshot(script_id) {
             if (!st.enabled || !s || !s.enabled) {
                 return;
             }
-            const sources = sources_create(st.modules);
+            const sources = sources_create(st.modules, st.settings);
             const p = await plan(s, { sources: sources, settings: st.settings, target: 'moss' });
             if (!p.early || p.errors.length > 0) {
                 return;
@@ -181,6 +194,9 @@ const host = moss_host({
     icon: chrome.runtime.getURL('icons/icon128.png'),
     on_error: record_error,
     on_values_change: refresh_snapshot,
+    on_menu_change: function () {
+        schedule_menus();
+    },
     get_script: get_script,
 });
 
@@ -250,12 +266,13 @@ function registration(id, p, code, world, run_at) {
 }
 
 /*
- * build_all() -> { page_scripts: registrations, background: [{ id, code }], errors: { id: message } }
+ * build_all() -> { page_scripts: registrations, background: [{ id, code }],
+ *                  context_menu: [{ id, name, code, world, matches }], errors: { id: message } }
  */
 async function build_all() {
     const st = await get_state();
-    const sources = sources_create(st.modules);
-    const out = { page_scripts: [], background: [], errors: {} };
+    const sources = sources_create(st.modules, st.settings);
+    const out = { page_scripts: [], background: [], context_menu: [], errors: {} };
     if (!st.enabled) {
         return out; // switched off globally: nothing is registered or run
     }
@@ -280,6 +297,11 @@ async function build_all() {
                 // The relay goes first, so it is usually listening before the script starts.
                 const relay = await build_relay(p, { sources: sources, script: s, token: st.tokens[s.id] });
                 out.page_scripts.push(registration(`${s.id}__relay`, p, relay, 'USER_SCRIPT', 'document_start'));
+            }
+            if (p.context_menu) {
+                // Not injected on load: it runs when picked from the right-click menu.
+                out.context_menu.push({ id: s.id, name: p.meta.name, code: code, world: world, matches: p.targets.matches });
+                continue;
             }
             out.page_scripts.push(registration(s.id, p, code, world, p.inject_at));
         } catch (e) {
@@ -351,12 +373,16 @@ async function sync() {
         }
     }
     await sync_runner(built.background, st.settings['runtime.keepalive']);
+    context_scripts = built.context_menu;
     // Scripts were rebuilt, so earlier runtime errors are stale.
     await chrome.storage.session.set({
         sync_status: { at: Date.now(), user_scripts: available, errors: built.errors },
         script_errors: {},
     });
+    tabs_with_errors.clear();
     await show_enabled_badge(st.enabled);
+    await refresh_all_badges();
+    schedule_menus();
 }
 
 /*
@@ -371,19 +397,239 @@ async function show_enabled_badge(enabled) {
     await chrome.action.setBadgeText({ text: 'off' });
 }
 
-let sync_timer = null;
-let syncing = Promise.resolve();
+// ---------- toolbar badge: scripts running on each tab ----------
+
+const tabs_with_errors = new Set();   // tab ids where a script reported an error
 
 /*
- * schedule_sync() — sync soon, once, however many changes arrive meanwhile
+ * running_count(st, url) -> how many enabled page scripts run on url
+ */
+function running_count(st, url) {
+    if (!st.enabled || !/^(https?|file|ftp):/.test(url || '')) {
+        return 0;
+    }
+    let count = 0;
+    for (const id of Object.keys(st.scripts)) {
+        const s = st.scripts[id];
+        const meta = st.metas[id];
+        const options = s.options || {};
+        const mode = options.sandbox || meta.sandbox;
+        if (!s.enabled || mode === 'extension' || meta.run_at === 'context_menu') {
+            continue;
+        }
+        if (url_matches(meta, url, with_blocked_pages(options, st.settings))) {
+            count++;
+        }
+    }
+    return count;
+}
+
+/*
+ * refresh_badge(tab_id) — the per-tab badge when "Toolbar icon badge" is "running"
+ */
+async function refresh_badge(tab_id) {
+    const st = await get_state();
+    try {
+        if (st.settings['popup.badge'] !== 'running' || !st.enabled) {
+            await chrome.action.setBadgeText({ tabId: tab_id, text: null });
+            return;
+        }
+        const tab = await chrome.tabs.get(tab_id);
+        const count = running_count(st, tab.url);
+        const failed = tabs_with_errors.has(tab_id);
+        let text = count > 0 ? String(count) : '';
+        if (failed && text === '') {
+            text = '!';
+        }
+        await chrome.action.setBadgeBackgroundColor({ tabId: tab_id, color: failed ? ERROR_COLOR : BADGE_COLOR });
+        await chrome.action.setBadgeText({ tabId: tab_id, text: text });
+    } catch (e) {
+        // tab closed meanwhile
+    }
+}
+
+/*
+ * refresh_all_badges() — recount every open tab
+ */
+async function refresh_all_badges() {
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+        await refresh_badge(tab.id);
+    }
+}
+
+chrome.tabs.onUpdated.addListener(function (tab_id, change, tab) {
+    if (change.status === 'loading') {
+        tabs_with_errors.delete(tab_id);
+    }
+    if (change.url !== undefined || change.status === 'loading') {
+        refresh_badge(tab_id);
+    }
+    if (change.status === 'complete') {
+        schedule_menus();
+    }
+    if (change.url !== undefined) {
+        offer_install(tab_id, change.url, tab);
+    }
+});
+chrome.tabs.onActivated.addListener(function () {
+    schedule_menus();
+});
+chrome.tabs.onRemoved.addListener(function (tab_id) {
+    tabs_with_errors.delete(tab_id);
+});
+
+// ---------- right-click menu: @run-at context-menu scripts and menu commands ----------
+
+let context_scripts = null;   // [{ id, name, code, world, matches }] from the last sync, null after a restart
+let menu_timer = null;
+let menu_building = Promise.resolve();   // rebuilds run one after another, never interleaved
+let menu_commands = {};       // menu item id -> { conn, id }
+
+/*
+ * schedule_menus() — rebuild the right-click menu soon, once
+ */
+function schedule_menus() {
+    clearTimeout(menu_timer);
+    menu_timer = setTimeout(function () {
+        menu_building = menu_building.then(rebuild_menus).catch(function (e) {
+            console.error('Moss: could not build the right-click menu', e);
+        });
+    }, 120);
+}
+
+/*
+ * rebuild_menus() — context-menu scripts (on their pages) plus the active tab's menu commands
+ */
+async function rebuild_menus() {
+    if (!chrome.contextMenus) {
+        return;
+    }
+    await chrome.contextMenus.removeAll();
+    menu_commands = {};
+    const st = await get_state();
+    if (!st.enabled) {
+        return;
+    }
+    if (context_scripts === null) {
+        context_scripts = (await build_all()).context_menu;
+    }
+    for (const item of context_scripts) {
+        chrome.contextMenus.create({ id: `moss-s:${item.id}`, title: item.name, contexts: ['all'], documentUrlPatterns: item.matches });
+    }
+    if (!st.settings['menu.context_menu']) {
+        return;
+    }
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tabs.length === 0) {
+        return;
+    }
+    const commands = host.list_menus(tabs[0].id);
+    for (let i = 0; i < commands.length; i++) {
+        const key = `moss-c:${i}`;
+        menu_commands[key] = { conn: commands[i].conn, id: commands[i].id };
+        chrome.contextMenus.create({ id: key, title: commands[i].caption, contexts: ['all'] });
+    }
+}
+
+/*
+ * run_context_script(id, tab, frame_id) — inject a @run-at context-menu script now
+ */
+async function run_context_script(id, tab, frame_id) {
+    if (context_scripts === null) {
+        context_scripts = (await build_all()).context_menu;
+    }
+    let item = null;
+    for (const candidate of context_scripts) {
+        if (candidate.id === id) {
+            item = candidate;
+        }
+    }
+    if (item === null) {
+        return;
+    }
+    if (!chrome.userScripts.execute) {
+        chrome.notifications.create({
+            type: 'basic', iconUrl: chrome.runtime.getURL('icons/icon128.png'), title: item.name,
+            message: '@run-at context-menu needs Chrome 135 or newer.',
+        });
+        return;
+    }
+    await chrome.userScripts.execute({
+        target: { tabId: tab.id, frameIds: [frame_id || 0] },
+        js: [{ code: item.code }],
+        world: item.world,
+        injectImmediately: true,
+    });
+}
+
+if (chrome.contextMenus) {
+    chrome.contextMenus.onClicked.addListener(function (info, tab) {
+        const id = String(info.menuItemId);
+        if (id.startsWith('moss-s:')) {
+            run_context_script(id.slice(7), tab, info.frameId).catch(function (e) {
+                console.error('Moss: context-menu script failed', e);
+            });
+            return;
+        }
+        const command = menu_commands[id];
+        if (command !== undefined) {
+            host.run_menu(command.conn, command.id);
+        }
+    });
+}
+
+// ---------- installing scripts from .user.js links ----------
+
+const offered = {};   // url -> time it was last offered, so a reload doesn't ask again at once
+
+/*
+ * offer_install(tab_id, url, tab) — open the install dialog for a userscript link
+ */
+async function offer_install(tab_id, url, tab) {
+    if (!USER_JS_RE.test(url) || url.startsWith(chrome.runtime.getURL(''))) {
+        return;
+    }
+    const st = await get_state();
+    if (!st.settings['install.detect_urls']) {
+        return;
+    }
+    if (offered[url] !== undefined && Date.now() - offered[url] < 10e3) {
+        return;
+    }
+    offered[url] = Date.now();
+    const create = { url: chrome.runtime.getURL(`src/dashboard/index.html?install=${encodeURIComponent(url)}`), openerTabId: tab_id };
+    if (tab && tab.index !== undefined) {
+        create.index = tab.index + 1;
+    }
+    await chrome.tabs.create(create);
+}
+
+let sync_timer = null;
+let syncing = Promise.resolve();
+let sync_waiters = [];     // resolve functions of callers waiting for the next sync
+
+/*
+ * schedule_sync() -> Promise that settles once the sync it schedules has finished.
+ * Syncs soon, once, however many changes arrive meanwhile.
  */
 function schedule_sync() {
+    const done = new Promise(function (resolve) {
+        sync_waiters.push(resolve);
+    });
     clearTimeout(sync_timer);
     sync_timer = setTimeout(function () {
+        const waiters = sync_waiters;
+        sync_waiters = [];
         syncing = syncing.then(sync).catch(function (e) {
             console.error('Moss sync failed', e);
+        }).finally(function () {
+            for (const resolve of waiters) {
+                resolve(true);
+            }
         });
     }, 150);
+    return done;
 }
 
 // ---------- updates from GitHub / URLs ----------
@@ -457,6 +703,9 @@ function run_updates(opts) {
             if (!opts.all && (!s.source.auto || Date.now() - last < every)) {
                 continue;
             }
+            if (!opts.all && !s.enabled && !st.settings['update.disabled_scripts']) {
+                continue;
+            }
             summary.checked++;
             await update_one(s, st, summary, opts.all);
         }
@@ -500,7 +749,9 @@ async function clear_errors(id) {
     delete errors[id];
     await chrome.storage.session.set({ script_errors: errors });
     if (Object.keys(errors).length === 0) {
+        tabs_with_errors.clear();
         await show_enabled_badge((await get_state()).enabled);
+        await refresh_all_badges();
     }
     return true;
 }
@@ -519,6 +770,12 @@ const HANDLERS = {
     'sync': function () {
         schedule_sync();
         return true;
+    },
+    // A page just changed scripts and wants to reload a tab once Chrome has the new
+    // registrations. Drop the cached state in case storage.onChanged hasn't fired yet.
+    'sync.wait': function () {
+        state = null;
+        return schedule_sync();
     },
     'menu.list': function (msg) {
         return host.list_menus(msg.tab_id);

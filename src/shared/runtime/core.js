@@ -241,7 +241,20 @@ function moss_core(ctx) {
     rt.require = require_module;
     rt.start = start;
 
-    const info = { script: ctx.info, scriptHandler: 'Moss', version: ctx.version, sandboxMode: ctx.mode };
+    const nav = g.navigator || {};
+    const info = {
+        script: ctx.info,
+        scriptMetaStr: ctx.meta_str || '',
+        scriptWillUpdate: !!ctx.will_update,
+        scriptHandler: 'Moss',
+        version: ctx.version,
+        sandboxMode: ctx.mode,
+        injectInto: ctx.mode,
+        isIncognito: !!(g.chrome && g.chrome.extension && g.chrome.extension.inIncognitoContext),
+        downloadMode: 'browser',
+        platform: { os: nav.platform || '', browserName: 'Chrome' },
+        userAgentData: nav.userAgentData ? { brands: nav.userAgentData.brands, mobile: nav.userAgentData.mobile, platform: nav.userAgentData.platform } : null,
+    };
     rt.api.GM_info = info;
     rt.gm.info = info;
     rt.api.GM_log = log;

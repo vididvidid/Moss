@@ -18,6 +18,8 @@ export function permissions_for(code) {
             permission = CHROME_PERMISSION[grant.slice(7).split('.')[0]];
         } else if (grant === 'GM_download') {
             permission = 'downloads';
+        } else if (grant === 'GM_cookie' || grant === 'GM.cookie') {
+            permission = 'cookies';
         }
         if (permission && optional.includes(permission) && !wanted.includes(permission)) {
             wanted.push(permission);

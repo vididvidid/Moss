@@ -6,10 +6,12 @@
  *
  * struct host_opts {
  *     get_script(conn) -> Promise<struct script_info | null>;
- *     policy: { chrome_namespaces: string[]|null, require_grants: boolean, require_connect: boolean };
+ *     policy: { chrome_namespaces: string[]|null, require_grants: boolean, require_connect: boolean,
+ *               cookies: 'all' | 'no_httponly' | 'none' };
  *     icon: string;                          default notification icon URL
  *     on_error(script, message, conn);      optional, called for script errors
  *     on_values_change(script_id);          optional, called after a value is set or deleted
+ *     on_menu_change(conn);                 optional, called after a menu command is added or removed
  * }
  * struct script_info { id, name: string; grants, connect: string[]; }
  * struct conn {

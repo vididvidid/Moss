@@ -1,15 +1,27 @@
 /*
- * Host feature: menu — collects menu commands per connection for the toolbar popup.
+ * Host feature: menu — collects menu commands per connection for the toolbar popup
+ * (and Moss's right-click menu, through opts.on_menu_change).
  */
 moss_host_features.menu = function (host) {
     'use strict';
 
+    /*
+     * changed(conn) — tell the owner that a tab's menu commands changed
+     */
+    function changed(conn) {
+        if (host.opts.on_menu_change) {
+            host.opts.on_menu_change(conn);
+        }
+    }
+
     host.handlers['menu.register'] = function (conn, script, args) {
         conn.menu.set(args[0], args[1]);
+        changed(conn);
         return true;
     };
     host.handlers['menu.unregister'] = function (conn, script, args) {
         conn.menu.delete(args[0]);
+        changed(conn);
         return true;
     };
 

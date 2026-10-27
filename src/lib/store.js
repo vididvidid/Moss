@@ -5,6 +5,7 @@
  *   modules  { [name]: { name, code, updated_at } }   — names like "utils/text"
  *   settings { [key]: value }                         — see settings.js
  *   moss_enabled: boolean                             — global on/off; missing = on
+ *   trash    { [id]: { script, values, deleted_at } } — deleted scripts, restorable
  *   tokens   { [id]: secret }                         — authenticates script ports
  *   updates  { [id]: { checked_at, status, error, version, updated_at } } — see updater.js
  *   values:<id>                                       — a script's GM values
@@ -112,6 +113,59 @@ export async function remove_script(id) {
     delete scripts[id];
     await AREA.set({ scripts: scripts });
     await AREA.remove(`values:${id}`);
+}
+
+/*
+ * load_trash() -> { [id]: { script, values, deleted_at } }
+ */
+export function load_trash() {
+    return read('trash', {});
+}
+
+/*
+ * trash_script(id) — move a script and its values to the trash
+ */
+export async function trash_script(id) {
+    const scripts = await load_scripts();
+    if (scripts[id] === undefined) {
+        return;
+    }
+    const trash = await load_trash();
+    trash[id] = { script: scripts[id], values: await load_values(id), deleted_at: Date.now() };
+    delete scripts[id];
+    await AREA.set({ scripts: scripts, trash: trash });
+    await AREA.remove(`values:${id}`);
+}
+
+/*
+ * restore_script(id) -> the restored struct script, or null if it is not in the trash
+ */
+export async function restore_script(id) {
+    const trash = await load_trash();
+    const item = trash[id];
+    if (item === undefined) {
+        return null;
+    }
+    const scripts = await load_scripts();
+    scripts[id] = item.script;
+    delete trash[id];
+    const patch = { scripts: scripts, trash: trash };
+    patch[`values:${id}`] = item.values || {};
+    await AREA.set(patch);
+    return item.script;
+}
+
+/*
+ * purge_trash(id) — delete one trashed script for good, or every one when id is null
+ */
+export async function purge_trash(id) {
+    const trash = await load_trash();
+    if (id === null) {
+        await AREA.set({ trash: {} });
+        return;
+    }
+    delete trash[id];
+    await AREA.set({ trash: trash });
 }
 
 /*

@@ -97,6 +97,8 @@
         <input type="file" id="backup-file" accept=".json,application/json" hidden>
         <button class="btn danger" id="settings-reset">Reset settings to defaults</button>
       </div>
+      <h2>Trash</h2>
+      <div id="trash"></div>
     </div>
   </main>
 
@@ -136,21 +138,23 @@ toast('Comments hidden');</pre>
       <table>
         <tr><th>@match / @exclude-match</th><td>Chrome match patterns: <code>https://*.site.com/*</code></td></tr>
         <tr><th>@include / @exclude</th><td>Globs (<code>*</code>) or <code>/regex/</code></td></tr>
-        <tr><th>@run-at</th><td>document-start · document-end · document-idle</td></tr>
+        <tr><th>@run-at</th><td>document-start · document-end · document-idle · context-menu (runs when picked from the right-click menu; Chrome 135+)</td></tr>
         <tr><th>@noframes</th><td>Top frame only</td></tr>
         <tr><th>@use path [as name]</th><td>Bundle a module; <code>as name</code> makes it a variable</td></tr>
-        <tr><th>@require url</th><td>Remote library, downloaded once and cached</td></tr>
-        <tr><th>@grant</th><td><code>GM_xmlhttpRequest</code>, <code>GM_download</code>, <code>chrome.&lt;namespace&gt;</code></td></tr>
+        <tr><th>@require url</th><td>Remote library, downloaded once and cached. Add <code>#sha256=…</code> to check its hash</td></tr>
+        <tr><th>@resource name url</th><td>A file for <code>GM_getResourceText(name)</code> / <code>GM_getResourceURL(name)</code>, downloaded once and bundled</td></tr>
+        <tr><th>@grant</th><td><code>GM_xmlhttpRequest</code>, <code>GM_download</code>, <code>GM_cookie</code>, <code>window.close</code>, <code>window.focus</code>, <code>window.onurlchange</code>, <code>chrome.&lt;namespace&gt;</code></td></tr>
         <tr><th>@connect host</th><td>Hosts GM_xmlhttpRequest may reach (export → host permissions)</td></tr>
         <tr><th>@folder a/b</th><td>Where the script sits in the sidebar</td></tr>
-        <tr><th>@inject raw</th><td>No wrapper: your code exactly as written</td></tr>
+        <tr><th>@inject raw</th><td>No wrapper: your code exactly as written (Tampermonkey's <code>@unwrap</code> does the same)</td></tr>
         <tr><th>@strict</th><td>Run the script in strict mode (recommended): silent mistakes, like assigning to a misspelled variable, become errors</td></tr>
       </table>
 
       <h2>APIs</h2>
-      <p><code>GM_getValue/setValue/deleteValue/listValues</code> · <code>GM_addValueChangeListener</code> · <code>GM_addStyle</code> · <code>GM_addElement</code> ·
-        <code>GM_xmlhttpRequest</code> · <code>GM_notification</code> · <code>GM_registerMenuCommand</code> (shown in the toolbar popup) ·
-        <code>GM_openInTab</code> · <code>GM_setClipboard</code> · <code>GM_download</code> · <code>GM_info</code> · <code>GM.*</code> promise versions ·
+      <p><code>GM_getValue/setValue/deleteValue/listValues</code> · <code>GM_getValues/setValues/deleteValues</code> · <code>GM_addValueChangeListener</code> · <code>GM_addStyle</code> · <code>GM_addElement</code> ·
+        <code>GM_xmlhttpRequest</code> · <code>GM_notification</code> · <code>GM_registerMenuCommand</code> (in the toolbar popup and the right-click menu) ·
+        <code>GM_openInTab</code> · <code>GM_setClipboard</code> · <code>GM_download</code> · <code>GM_getResourceText/URL</code> · <code>GM_getTab/saveTab/getTabs</code> ·
+        <code>GM_cookie</code> · <code>window.onurlchange</code> · <code>GM_info</code> · <code>GM.*</code> promise versions ·
         <code>moss.chrome</code> · <code>require()</code>. Top-level <code>await</code> works.</p>
 
       <h2>Modules</h2>
@@ -176,6 +180,11 @@ toast('Comments hidden');</pre>
       <p><b>Export as extension</b> builds a Manifest V3 extension from one script and downloads it as a zip. It contains only the
         runtime pieces, background code, permissions and popup the script actually uses. You can review and edit every one
         of them before downloading.</p>
+
+      <h2>Editor shortcuts</h2>
+      <p>Defaults follow Tampermonkey's key map. Change them in Settings → Editor → Custom shortcuts with lines such as
+        <code>Ctrl-Shift-K = delete_line</code>, or <code>Ctrl-R = none</code> to give a key back to the browser.</p>
+      <div id="keys-doc"></div>
     </article>
   </main>
 

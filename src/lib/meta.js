@@ -3,14 +3,14 @@
  * Userscript metadata: parsing, normalisation and URL targeting.
  *
  * struct meta {
- *     name, namespace, version, description, author, icon, folder: string;
- *     update_url, download_url, homepage: string;
+ *     name, namespace, version, description, author, icon, folder, copyright: string;
+ *     update_url, download_url, homepage, support_url: string;
  *     sandbox: 'isolated' | 'page' | 'extension';
- *     run_at: 'document_start' | 'document_end' | 'document_idle';
+ *     run_at: 'document_start' | 'document_end' | 'document_idle' | 'context_menu';
  *     noframes: boolean;
  *     inject: 'wrapped' | 'raw';
  *     strict: boolean;                 // @strict: run the script in strict mode
- *     match, include, exclude, exclude_match, grant, require, resource, connect: string[];
+ *     match, include, exclude, exclude_match, grant, require, resource, connect, tag: string[];
  *     use: { name: string; alias: string|null }[];
  *     extra: { [key: string]: string };  // unknown header keys, kept
  * }
@@ -20,12 +20,14 @@
 const LIST_KEYS = {
     'match': 'match', 'include': 'include', 'exclude': 'exclude', 'exclude-match': 'exclude_match',
     'grant': 'grant', 'require': 'require', 'resource': 'resource', 'connect': 'connect', 'use': 'use',
+    'tag': 'tag',
 };
 // Header key → field of struct meta, for single-value keys.
 const TEXT_KEYS = {
     name: 'name', namespace: 'namespace', version: 'version', description: 'description', author: 'author',
     icon: 'icon', iconurl: 'icon', folder: 'folder', updateurl: 'update_url', downloadurl: 'download_url',
-    homepage: 'homepage', homepageurl: 'homepage',
+    homepage: 'homepage', homepageurl: 'homepage', website: 'homepage', source: 'homepage',
+    supporturl: 'support_url', copyright: 'copyright',
 };
 
 const SANDBOX_ALIASES = {
@@ -40,8 +42,9 @@ const RUN_AT = {
     'document-end': 'document_end',
     'document-body': 'document_end',
     'document-idle': 'document_idle',
+    'context-menu': 'context_menu',
 };
-export const RUN_AT_VALUES = ['document-start', 'document-end', 'document-idle'];
+export const RUN_AT_VALUES = ['document-start', 'document-end', 'document-idle', 'context-menu'];
 
 /*
  * meta_create() -> a struct meta holding the defaults
@@ -49,7 +52,7 @@ export const RUN_AT_VALUES = ['document-start', 'document-end', 'document-idle']
 function meta_create() {
     const meta = {
         name: '', namespace: '', version: '0.1.0', description: '', author: '', icon: '', folder: '',
-        update_url: '', download_url: '', homepage: '', sandbox: 'isolated', run_at: 'document_idle',
+        copyright: '', update_url: '', download_url: '', homepage: '', support_url: '', sandbox: 'isolated', run_at: 'document_idle',
         noframes: false, inject: 'wrapped', strict: false, extra: {},
     };
     for (const key of Object.keys(LIST_KEYS)) {
@@ -112,6 +115,9 @@ function apply_key(meta, key, value, warnings) {
         return false;
     case 'inject':
         meta.inject = value === 'raw' ? 'raw' : 'wrapped';
+        return false;
+    case 'unwrap':
+        meta.inject = 'raw'; // Tampermonkey's @unwrap: inject the code as written
         return false;
     default:
         meta.extra[key] = value; // unknown keys are kept, never dropped
@@ -176,6 +182,28 @@ export function parse_meta(code) {
         errors.push('@name is required.');
     }
     return { meta: meta, errors: errors, warnings: warnings };
+}
+
+/*
+ * parse_resources(meta) -> [{ name, url }] from the "@resource name url" lines
+ */
+export function parse_resources(meta) {
+    const out = [];
+    for (const line of meta.resource) {
+        const m = /^(\S+)\s+(\S+)$/.exec(line);
+        if (m !== null) {
+            out.push({ name: m[1], url: m[2] });
+        }
+    }
+    return out;
+}
+
+/*
+ * meta_block(code) -> the text of the ==UserScript== header (GM_info.scriptMetaStr)
+ */
+export function meta_block(code) {
+    const block = /\/\/[ \t]*==UserScript==[\s\S]*?\/\/[ \t]*==\/UserScript==/.exec(code || '');
+    return block === null ? '' : block[0];
 }
 
 // ---------- URL rules ----------
