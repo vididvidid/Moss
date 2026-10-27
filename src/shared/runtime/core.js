@@ -204,12 +204,31 @@ function moss_core(ctx) {
             }
         }
 
+        /*
+         * when_due(fn) — call fn at the @run-at the user asked for. Page-mode scripts with
+         * a relay are injected at document_start and wait here.
+         */
+        function when_due(fn) {
+            if (!ctx.defer_until || ctx.defer_until === 'document_start' || !g.document) {
+                fn();
+                return;
+            }
+            const later = ctx.defer_until === 'document_idle' ? function () { setTimeout(fn, 0); } : fn;
+            if (g.document.readyState === 'loading') {
+                g.document.addEventListener('DOMContentLoaded', later, { once: true });
+            } else {
+                later();
+            }
+        }
+
         // Exported background scripts start synchronously so chrome.* listeners are
         // registered on the service worker's first turn (required to be woken by events).
-        if (ctx.sync) {
-            go();
+        if (ctx.sync || ctx.early) {
+            when_due(go);
         } else {
-            ready.then(go);
+            ready.then(function () {
+                when_due(go);
+            });
         }
     }
 

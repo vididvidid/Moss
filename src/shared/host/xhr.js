@@ -63,9 +63,12 @@ moss_host_features.xhr = function (host) {
             }
             const out = { status: res.status, status_text: res.statusText, final_url: res.url, response_headers: headers };
             if (d.binary) {
-                out.base64 = base64(await res.arrayBuffer());
+                const buffer = await res.arrayBuffer();
+                out.size = buffer.byteLength;
+                out.base64 = base64(buffer);
             } else {
                 out.response_text = await res.text();
+                out.size = out.response_text.length;
             }
             return out;
         } catch (e) {

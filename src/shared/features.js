@@ -32,9 +32,9 @@ function uses_any(names) {
 export const FEATURES = {
     values: {
         label: 'Storage',
-        summary: 'GM_getValue / GM_setValue / GM_deleteValue / GM_listValues',
-        api: ['GM_getValue', 'GM_setValue', 'GM_deleteValue', 'GM_listValues'],
-        detect: uses_any(['GM[_.](?:get|set|delete)Value', 'GM[_.]listValues']),
+        summary: 'GM_getValue / GM_setValue / GM_deleteValue / GM_listValues / GM_addValueChangeListener',
+        api: ['GM_getValue', 'GM_setValue', 'GM_deleteValue', 'GM_listValues', 'GM_addValueChangeListener', 'GM_removeValueChangeListener'],
+        detect: uses_any(['GM[_.](?:get|set|delete)Value', 'GM[_.]listValues', 'GM[_.](?:add|remove)ValueChangeListener']),
         host: true,
         permissions: ['storage'],
     },
@@ -150,6 +150,7 @@ export const BUILTIN_MODULES = {
 };
 
 export const RUNTIME_CORE = 'src/shared/runtime/core.js';
+export const RUNTIME_RELAY = 'src/shared/runtime/relay.js';
 export const HOST_CORE = 'src/shared/host/core.js';
 
 /*

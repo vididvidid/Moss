@@ -11,6 +11,7 @@
  *     tab: 'code' | 'options' | 'bundle' | 'values';
  *     dirty: boolean;              editor differs from what is saved
  *     own_write: string | null;    code we just wrote ourselves (not an outside change)
+ *     local: { [id]: { modified, error } };   scripts linked to a file on this computer
  * }
  */
 import { build, plan, slugify } from '../lib/bundler.js';
@@ -18,11 +19,12 @@ import { export_extension } from '../lib/exporter.js';
 import { fetch_text, list_repo_scripts, parse_source_url } from '../lib/github.js';
 import { parse_meta } from '../lib/meta.js';
 import { migrate_state, SCHEMA_VERSION } from '../lib/migrate.js';
+import { has_access, load_handle, pick_file, read_file, reconnect, remove_handle, save_handle } from '../lib/local_files.js';
 import { missing_permissions, request_permissions_for } from '../lib/permissions.js';
 import { SCRIPT_OPTIONS, SETTINGS, resolve_settings } from '../lib/settings.js';
 import { load_text, sources_create } from '../lib/sources.js';
 import * as store from '../lib/store.js';
-import { EVERY_OPTIONS, apply_update, check_for_update, source_create } from '../lib/updater.js';
+import { EVERY_OPTIONS, apply_update, check_for_update, sha256, source_create } from '../lib/updater.js';
 import { zip } from '../lib/zip.js';
 import { BUILTIN_MODULES, FEATURES } from '../shared/features.js';
 
@@ -38,6 +40,7 @@ const app = {
     tab: 'code',
     dirty: false,
     own_write: null,
+    local: {},          // script id -> { modified, error } for scripts linked to a local file
 };
 
 // ---------- small helpers ----------
@@ -456,6 +459,7 @@ function render_toolbar() {
     $('export').hidden = kind !== 'script';
     $('update').hidden = !has_source;
     $('update').title = has_source ? `Fetch the latest version from ${s.source.label || s.source.url}` : '';
+    $('update').textContent = is_local(s) ? '↻ Reload file' : '↻ Update';
     $('save').hidden = kind === 'builtin';
     $('delete').hidden = kind === 'builtin';
     $('delete').textContent = kind === 'module' && BUILTIN_MODULES[id] ? 'Revert to built-in' : 'Delete';
@@ -957,6 +961,106 @@ async function import_code(code) {
     toast(`Imported "${parsed.meta.name}" (disabled — review it, then enable)`);
 }
 
+// ---------- scripts linked to a local file ----------
+
+/*
+ * is_local(s) -> true if the script is linked to a file on this computer
+ */
+function is_local(s) {
+    return s !== null && !!s.source && s.source.kind === 'local';
+}
+
+/*
+ * apply_local_text(s, text) — store the file's text as the script's code
+ */
+async function apply_local_text(s, text) {
+    const source = Object.assign({}, s.source, { hash: await sha256(text), updated_at: Date.now() });
+    app.own_write = text;
+    app.scripts[s.id] = await store.put_script(Object.assign({}, s, { code: text, source: source }));
+    if (current() !== null && current().id === s.id) {
+        await select('script', s.id, true);
+    }
+}
+
+/*
+ * link_local_file() — link the selected script to a file chosen with the file picker
+ */
+async function link_local_file() {
+    let handle;
+    try {
+        handle = await pick_file(); // first await: keeps the user gesture
+    } catch (e) {
+        return; // picker cancelled
+    }
+    const s = current();
+    const file = await read_file(handle);
+    if (!confirm(`Replace "${parse_meta(s.code).meta.name}" with the contents of ${handle.name}? From now on it reloads whenever the file is saved (while a Moss page is open).`)) {
+        return;
+    }
+    await save_handle(s.id, handle);
+    const source = { kind: 'local', url: `local:${handle.name}`, label: `${handle.name} (file on this computer)`, hash: '', auto: true, every: 0 };
+    app.scripts[s.id] = Object.assign({}, s, { source: source });
+    app.local[s.id] = { modified: file.modified, error: null };
+    await apply_local_text(app.scripts[s.id], file.text);
+    toast(`Linked to ${handle.name} — save the file to reload the script`);
+}
+
+/*
+ * reload_local(s, ask) -> true if the file was read; ask: allowed to show the browser's
+ * permission prompt (only from a click)
+ */
+async function reload_local(s, ask) {
+    const handle = await load_handle(s.id);
+    if (handle === undefined) {
+        app.local[s.id] = { modified: 0, error: 'The file link was lost — link the file again.' };
+        return false;
+    }
+    if (!(await has_access(handle)) && !(ask && (await reconnect(handle)))) {
+        app.local[s.id] = { modified: 0, error: 'The browser needs your OK to read the file again — click Reconnect.' };
+        return false;
+    }
+    const known = app.local[s.id];
+    const file = await read_file(handle);
+    app.local[s.id] = { modified: file.modified, error: null };
+    if (known && known.modified === file.modified && file.text === s.code) {
+        return true;
+    }
+    if (file.text === s.code) {
+        return true;
+    }
+    if (current() !== null && current().id === s.id && app.dirty) {
+        toast(`${handle.name} changed, but you have unsaved edits here — save or discard them to reload.`, 'error');
+        return true;
+    }
+    await apply_local_text(s, file.text);
+    toast(`Reloaded "${parse_meta(file.text).meta.name}" from ${handle.name}`);
+    return true;
+}
+
+let watching = false;
+
+/*
+ * watch_local_files() — reload every linked script whose file changed (runs every 1.5 s)
+ */
+async function watch_local_files() {
+    if (watching) {
+        return;
+    }
+    watching = true;
+    try {
+        for (const id of Object.keys(app.scripts)) {
+            const s = app.scripts[id];
+            if (is_local(s)) {
+                await reload_local(s, false);
+            }
+        }
+    } catch (e) {
+        console.error('Moss: watching local files failed', e);
+    } finally {
+        watching = false;
+    }
+}
+
 // ---------- updating from the source ----------
 
 /*
@@ -964,6 +1068,18 @@ async function import_code(code) {
  */
 async function update_from_source(s) {
     if (app.dirty && !confirm('You have unsaved changes in the editor. Updating replaces them. Continue?')) {
+        return;
+    }
+    if (is_local(s)) {
+        app.dirty = false;
+        if (await reload_local(s, true)) {
+            toast('Read the file again');
+        } else {
+            toast(app.local[s.id].error, 'error');
+        }
+        if (app.tab === 'options') {
+            render_options();
+        }
         return;
     }
     $('update').disabled = true;
@@ -1165,7 +1281,36 @@ function source_box(s) {
                 on_click: function () {
                     link_source(input);
                 },
-            }, 'Link')));
+            }, 'Link')),
+            h('div', { class: 'row' },
+                h('button', { class: 'btn', on_click: link_local_file }, 'Link a local file…'),
+                h('span', { class: 'hint' }, 'Live-reload while you develop: the script follows the file every time you save it.')));
+    }
+    if (is_local(s)) {
+        const info = app.local[s.id];
+        const status = info && info.error ? info.error
+            : `reloads when the file is saved (while a Moss page is open)${info && info.modified ? ` · file saved ${new Date(info.modified).toLocaleString()}` : ''}`;
+        return h('div', { class: 'source-box' },
+            h('h3', null, 'Source'),
+            h('div', { class: 'row' }, h('code', null, src.label)),
+            h('div', { class: 'row' },
+                h('button', {
+                    class: 'btn',
+                    on_click: function () {
+                        update_from_source(current());
+                    },
+                }, info && info.error ? 'Reconnect' : '↻ Read the file now'),
+                h('button', {
+                    class: 'btn ghost',
+                    on_click: async function () {
+                        if (confirm('Unlink this script from the file? The current code stays.')) {
+                            await remove_handle(s.id);
+                            delete app.local[s.id];
+                            patch_source(null);
+                        }
+                    },
+                }, 'Unlink')),
+            h('div', { class: info && info.error ? 'error' : 'hint' }, status));
     }
     const u = app.updates[s.id];
     const status = update_status_text(u);
@@ -1851,6 +1996,7 @@ async function main() {
     await load_all();
     await load_status();
     render_tree();
+    setInterval(watch_local_files, 1500);
     const params = new URLSearchParams(location.search);
     const id = params.get('id');
     const module_name = params.get('module');

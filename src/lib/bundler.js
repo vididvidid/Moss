@@ -12,17 +12,20 @@
  *     modules: { name, src }[];                  in dependency order
  *     features: { name, reason }[];
  *     host_features: string[];                   features that need the privileged side
- *     transport: 'port' | 'window' | 'direct' | 'none';
+ *     transport: 'port' | 'window' | 'direct' | 'relay' | 'none';
+ *     inject_at: string;                         when Chrome injects it (page mode with a relay: document_start)
  *     native_chrome: boolean;                    moss.chrome is the real chrome object
  *     needs_popup: boolean;
  *     permissions, host_permissions: { name, reason }[];
  *     targets: struct targets | null;            null for extension mode
  *     aliases: { [alias]: module name };
  *     delay: number;
+ *     early: boolean;                            document_start + values: start at once from a
+ *                                                values snapshot instead of waiting for them
  * }
  */
 import { parse_meta, targets } from './meta.js';
-import { ALL_API, CHROME_PERMISSION, FEATURES, RUNTIME_CORE, runtime_feature, runtime_transport } from '../shared/features.js';
+import { ALL_API, CHROME_PERMISSION, FEATURES, RUNTIME_CORE, RUNTIME_RELAY, runtime_feature, runtime_transport } from '../shared/features.js';
 
 export const MOSS_VERSION = '0.2.0';
 const REQUIRE_RE = /\brequire\(\s*(['"])([^'"\n]+)\1\s*\)/g;
@@ -114,7 +117,10 @@ function pick_transport(mode, target, host_count) {
     if (host_count === 0) {
         return 'none';
     }
-    if (mode !== 'extension') {
+    if (mode === 'page') {
+        return 'relay';
+    }
+    if (mode === 'isolated') {
         return 'port';
     }
     return target === 'export' ? 'direct' : 'window';
@@ -173,7 +179,7 @@ export async function plan(script, args) {
 
     // Which features run on the privileged side, and how the script talks to it.
     const native_chrome = target === 'export' && mode === 'extension';
-    const bridged = mode !== 'page' && !raw;
+    const bridged = !raw;
     const values_local = settings['runtime.values_backend'] === 'local';
     const host_features = [];
     for (const name of feature_names) {
@@ -187,13 +193,6 @@ export async function plan(script, args) {
             continue;
         }
         host_features.push(name);
-    }
-    if (!bridged && !raw) {
-        for (const name of feature_names) {
-            if (FEATURES[name].host && name !== 'values' && name !== 'tabs') {
-                warnings.push(`${FEATURES[name].label} (${name}) won't work in page mode — it needs the extension bridge.`);
-            }
-        }
     }
 
     // chrome.* grants
@@ -211,9 +210,6 @@ export async function plan(script, args) {
         if (allowed && !allowed.includes(ns)) {
             errors.push(`chrome.${ns} is not enabled (Settings → Security).`);
         }
-    }
-    if (feature_names.includes('chrome') && mode === 'page') {
-        errors.push('moss.chrome is not available in page mode.');
     }
 
     // Permissions, each with the reason it is needed.
@@ -258,6 +254,8 @@ export async function plan(script, args) {
         }
     }
 
+    const transport = pick_transport(mode, target, host_features.length);
+    const placed = mode === 'extension' ? null : targets(meta, opt);
     return {
         meta: meta,
         errors: errors,
@@ -269,14 +267,16 @@ export async function plan(script, args) {
         modules: modules,
         features: features,
         host_features: host_features,
-        transport: pick_transport(mode, target, host_features.length),
+        transport: transport,
+        inject_at: placed === null ? null : (transport === 'relay' ? 'document_start' : placed.run_at),
         native_chrome: native_chrome,
         needs_popup: host_features.includes('menu'),
         permissions: map_to_list(permissions),
         host_permissions: map_to_list(host_permissions),
-        targets: mode === 'extension' ? null : targets(meta, opt),
+        targets: placed,
         aliases: aliases,
         delay: Number(opt.delay) || 0,
+        early: placed !== null && placed.run_at === 'document_start' && host_features.includes('values'),
     };
 }
 
@@ -292,7 +292,9 @@ function map_to_list(map) {
 }
 
 /*
- * build(plan, { sources, script, token, settings }) -> the code to inject
+ * build(plan, { sources, script, token, settings, values }) -> the code to inject
+ *   values: the script's stored GM values, baked in when plan.early so the script can
+ *   start before the page's own scripts without waiting for them
  */
 export async function build(p, args) {
     const sources = args.sources;
@@ -324,6 +326,9 @@ export async function build(p, args) {
         aliases: p.aliases,
         filter: p.targets === null ? null : p.targets.filter,
         delay: p.delay,
+        defer_until: p.transport === 'relay' ? p.targets.run_at : null,
+        early: p.early,
+        values_snapshot: p.early ? (args.values || {}) : null,
         native_chrome: p.native_chrome,
         sync: p.native_chrome,
         log_errors: settings['runtime.log_errors'] !== false,
@@ -358,4 +363,19 @@ export async function build(p, args) {
     }
     parts.push(script.code, '});', '})();', `//# sourceURL=moss/${slug}.user.js`);
     return parts.join('\n');
+}
+
+/*
+ * build_relay(plan, { sources, script, token }) -> the sandboxed-world relay a page-mode
+ * script with a bridge needs (injected beside it, at document_start)
+ */
+export async function build_relay(p, args) {
+    const ctx = { id: args.script.id, token: args.token || '' };
+    return [
+        `// ${p.meta.name} — Moss relay for its page-mode bundle`,
+        '(function () {',
+        await args.sources.text(RUNTIME_RELAY),
+        `moss_relay(${JSON.stringify(ctx)});`,
+        '})();',
+    ].join('\n');
 }

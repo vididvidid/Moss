@@ -9,6 +9,7 @@
  *     policy: { chrome_namespaces: string[]|null, require_grants: boolean, require_connect: boolean };
  *     icon: string;                          default notification icon URL
  *     on_error(script, message, conn);      optional, called for script errors
+ *     on_values_change(script_id);          optional, called after a value is set or deleted
  * }
  * struct script_info { id, name: string; grants, connect: string[]; }
  * struct conn {

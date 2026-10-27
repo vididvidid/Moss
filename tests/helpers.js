@@ -130,6 +130,8 @@ export function fake_chrome(calls) {
             create: recorder(log, 'tabs.create', { id: 7 }),
             remove: recorder(log, 'tabs.remove'),
             query: recorder(log, 'tabs.query', []),
+            get: recorder(log, 'tabs.get', { id: 5, index: 3, windowId: 1 }),
+            onRemoved: event_create(),
         },
     };
 }

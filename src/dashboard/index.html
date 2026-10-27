@@ -122,7 +122,7 @@ toast('Comments hidden');</pre>
       <h2>Three sandboxes: <code>@sandbox</code></h2>
       <table>
         <tr><th>isolated</th><td>The default. Runs in a private world on the page: it sees the DOM but not the page's JavaScript. All GM APIs are available, and <code>moss.chrome</code> if granted.</td></tr>
-        <tr><th>page</th><td>Runs as the page's own JavaScript (aliases: <code>none</code>, <code>raw</code>, or Tampermonkey's <code>@grant none</code>). Can patch <code>window.fetch</code> and read page globals. There's no extension bridge, so values go to localStorage and privileged APIs are unavailable.</td></tr>
+        <tr><th>page</th><td>Runs as the page's own JavaScript (aliases: <code>none</code>, <code>raw</code>, or Tampermonkey's <code>@grant none</code>). Can patch <code>window.fetch</code> and read page globals through <code>unsafeWindow</code>, and still use every GM API: Moss runs a small relay beside it in the sandbox.</td></tr>
         <tr><th>extension</th><td>No page at all: a background script with browser APIs (aliases: <code>native</code>, <code>background</code>). Use it for tools such as clearing history, managing tabs or bookmarks. Add <code>// @grant chrome.history</code> (or any namespace) and call <code>await moss.chrome.history.search({ text: '' })</code> or <code>moss.chrome.history.onVisited.addListener(fn)</code>.</td></tr>
       </table>
 
@@ -142,7 +142,7 @@ toast('Comments hidden');</pre>
       </table>
 
       <h2>APIs</h2>
-      <p><code>GM_getValue/setValue/deleteValue/listValues</code> · <code>GM_addStyle</code> · <code>GM_addElement</code> ·
+      <p><code>GM_getValue/setValue/deleteValue/listValues</code> · <code>GM_addValueChangeListener</code> · <code>GM_addStyle</code> · <code>GM_addElement</code> ·
         <code>GM_xmlhttpRequest</code> · <code>GM_notification</code> · <code>GM_registerMenuCommand</code> (shown in the toolbar popup) ·
         <code>GM_openInTab</code> · <code>GM_setClipboard</code> · <code>GM_download</code> · <code>GM_info</code> · <code>GM.*</code> promise versions ·
         <code>moss.chrome</code> · <code>require()</code>. Top-level <code>await</code> works.</p>
