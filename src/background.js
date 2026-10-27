@@ -5,6 +5,7 @@
  * stored data, and checks imported scripts for updates.
  *
  * struct state {                     cached view of storage, rebuilt after changes
+ *     enabled: boolean;              global on/off from the dashboard
  *     scripts: { [id]: struct script };
  *     modules: { [name]: struct module };
  *     settings: resolved settings;
@@ -26,7 +27,7 @@ import { migrate_state, upgrade_examples, SCHEMA_VERSION } from './lib/migrate.j
 import { missing_permissions } from './lib/permissions.js';
 import { host_policy, resolve_settings } from './lib/settings.js';
 import { load_text, sources_create } from './lib/sources.js';
-import { load_modules, load_scripts, load_settings_raw, load_updates, new_id, put_script, record_update, tokens_for } from './lib/store.js';
+import { load_modules, load_moss_enabled, load_scripts, load_settings_raw, load_updates, new_id, put_script, record_update, tokens_for } from './lib/store.js';
 import { apply_update, check_for_update } from './lib/updater.js';
 
 const RUNNER = 'src/runner/offscreen.html';
@@ -85,6 +86,7 @@ function get_state() {
     if (state === null) {
         state = (async function () {
             await boot();
+            const enabled = await load_moss_enabled();
             const scripts = await load_scripts();
             const modules = await load_modules();
             const settings = resolve_settings(await load_settings_raw());
@@ -94,14 +96,14 @@ function get_state() {
             for (const id of Object.keys(scripts)) {
                 metas[id] = parse_meta(scripts[id].code).meta;
             }
-            return { scripts: scripts, modules: modules, settings: settings, tokens: tokens, metas: metas };
+            return { enabled: enabled, scripts: scripts, modules: modules, settings: settings, tokens: tokens, metas: metas };
         })();
     }
     return state;
 }
 
 chrome.storage.onChanged.addListener(function (changes, area) {
-    if (area !== 'local' || !(changes.scripts || changes.modules || changes.settings)) {
+    if (area !== 'local' || !(changes.scripts || changes.modules || changes.settings || changes.moss_enabled)) {
         return;
     }
     state = null;
@@ -116,7 +118,7 @@ chrome.storage.onChanged.addListener(function (changes, area) {
 async function get_script(conn) {
     const st = await get_state();
     const s = st.scripts[conn.script_id];
-    if (s === undefined || !s.enabled) {
+    if (!st.enabled || s === undefined || !s.enabled) {
         return null;
     }
     if (!conn.trusted && st.tokens[s.id] !== conn.token) {
@@ -158,7 +160,7 @@ function refresh_snapshot(script_id) {
         try {
             const st = await get_state();
             const s = st.scripts[script_id];
-            if (!s || !s.enabled) {
+            if (!st.enabled || !s || !s.enabled) {
                 return;
             }
             const sources = sources_create(st.modules);
@@ -254,6 +256,9 @@ async function build_all() {
     const st = await get_state();
     const sources = sources_create(st.modules);
     const out = { page_scripts: [], background: [], errors: {} };
+    if (!st.enabled) {
+        return out; // switched off globally: nothing is registered or run
+    }
     for (const id of Object.keys(st.scripts)) {
         const s = st.scripts[id];
         if (!s.enabled) {
@@ -351,7 +356,19 @@ async function sync() {
         sync_status: { at: Date.now(), user_scripts: available, errors: built.errors },
         script_errors: {},
     });
-    await chrome.action.setBadgeText({ text: '' });
+    await show_enabled_badge(st.enabled);
+}
+
+/*
+ * show_enabled_badge(enabled) — a grey "off" on the toolbar icon while Moss is switched off
+ */
+async function show_enabled_badge(enabled) {
+    if (enabled) {
+        await chrome.action.setBadgeText({ text: '' });
+        return;
+    }
+    await chrome.action.setBadgeBackgroundColor({ color: '#777777' });
+    await chrome.action.setBadgeText({ text: 'off' });
 }
 
 let sync_timer = null;
@@ -427,6 +444,9 @@ function run_updates(opts) {
         const st = await get_state();
         const updates = await load_updates();
         const summary = { checked: 0, updated: [], errors: [] };
+        if (!st.enabled && !opts.all) {
+            return summary; // no auto-updates while switched off; "Check all now" still works
+        }
         for (const id of Object.keys(st.scripts)) {
             const s = st.scripts[id];
             if (!s.source || !s.source.url || s.source.kind === 'local') {
@@ -480,7 +500,7 @@ async function clear_errors(id) {
     delete errors[id];
     await chrome.storage.session.set({ script_errors: errors });
     if (Object.keys(errors).length === 0) {
-        await chrome.action.setBadgeText({ text: '' });
+        await show_enabled_badge((await get_state()).enabled);
     }
     return true;
 }

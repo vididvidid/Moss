@@ -12,6 +12,8 @@ A modular userscript manager for Chromium (Manifest V3), written from scratch. I
 2. Open Moss's **Details** and turn on **Allow User Scripts**. Chrome requires this for any userscript manager. On Chrome versions before 138, Developer mode alone is enough.
 3. Click the Moss icon → **Dashboard**. Two example scripts and one example module are installed, all disabled.
 
+The **On/Off** switch at the top of the toolbar popup, next to **Dashboard**, turns every script off at once. Each script keeps its own Enabled setting, so switching Moss back on restores them as they were. While Moss is off, the toolbar icon shows "off".
+
 ## A script
 
 ```js
