@@ -4,6 +4,7 @@
  *   scripts  { [id]: struct script }
  *   modules  { [name]: { name, code, updated_at } }   — names like "utils/text"
  *   settings { [key]: value }                         — see settings.js
+ *   moss_enabled: boolean                             — global on/off; missing = on
  *   tokens   { [id]: secret }                         — authenticates script ports
  *   updates  { [id]: { checked_at, status, error, version, updated_at } } — see updater.js
  *   values:<id>                                       — a script's GM values
@@ -50,6 +51,20 @@ export function load_modules() {
  */
 export function load_settings_raw() {
     return read('settings', {});
+}
+
+/*
+ * load_moss_enabled() -> false only when Moss was switched off from the dashboard
+ */
+export async function load_moss_enabled() {
+    return (await read('moss_enabled', true)) !== false;
+}
+
+/*
+ * save_moss_enabled(on) — switch every script on or off at once, keeping each one's own toggle
+ */
+export async function save_moss_enabled(on) {
+    await AREA.set({ moss_enabled: on });
 }
 
 /*

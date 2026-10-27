@@ -4,7 +4,7 @@
  */
 import { parse_meta, url_matches } from '../lib/meta.js';
 import { request_permissions_for } from '../lib/permissions.js';
-import { load_scripts, patch_script } from '../lib/store.js';
+import { load_moss_enabled, load_scripts, patch_script, save_moss_enabled } from '../lib/store.js';
 
 /*
  * $(id) -> the element with that id
@@ -113,6 +113,15 @@ function fill(list, rows, empty) {
 }
 
 /*
+ * render_moss_enabled(on) — the global switch in the header and the "switched off" banner
+ */
+function render_moss_enabled(on) {
+    $('moss-enabled').checked = on;
+    $('moss-enabled-label').textContent = on ? 'On' : 'Off';
+    $('off-banner').hidden = on;
+}
+
+/*
  * main() — build the popup for the active tab
  */
 async function main() {
@@ -124,6 +133,12 @@ async function main() {
     const status = reply && reply.ok ? reply.value : {};
 
     $('banner').hidden = status.user_scripts !== false;
+    render_moss_enabled(await load_moss_enabled());
+    $('moss-enabled').addEventListener('change', async function () {
+        const on = $('moss-enabled').checked;
+        render_moss_enabled(on);
+        await save_moss_enabled(on);
+    });
     $('fix').addEventListener('click', function () {
         chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
     });

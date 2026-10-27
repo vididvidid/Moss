@@ -5,6 +5,7 @@
  *
  * struct app {                     everything the page knows, in one place
  *     scripts, modules, updates: as stored (see store.js);
+ *     enabled: boolean;            global on/off (moss_enabled)
  *     settings: resolved settings;
  *     status: { user_scripts, sync_status, script_errors };
  *     sel: { kind: 'script' | 'module' | 'builtin', id } | null;
@@ -34,6 +35,7 @@ const app = {
     scripts: {},
     modules: {},
     updates: {},
+    enabled: true,
     settings: resolve_settings({}),
     status: {},
     sel: null,
@@ -219,6 +221,7 @@ async function load_all() {
     app.scripts = await store.load_scripts();
     app.modules = await store.load_modules();
     app.updates = await store.load_updates();
+    app.enabled = await store.load_moss_enabled();
     app.settings = resolve_settings(await store.load_settings_raw());
     apply_appearance();
 }
@@ -655,6 +658,13 @@ async function toggle_enabled() {
     }
     app.scripts[app.sel.id] = await store.patch_script(app.sel.id, { enabled: on });
     render_tree();
+}
+
+/*
+ * render_moss_enabled() — the "switched off" banner (the switch itself is in the popup)
+ */
+function render_moss_enabled() {
+    $('off-banner').hidden = app.enabled;
 }
 
 // ---------- new scripts and modules ----------
@@ -1821,6 +1831,10 @@ async function on_storage_change(changes, area) {
     if (area !== 'local') {
         return;
     }
+    if (changes.moss_enabled) {
+        app.enabled = changes.moss_enabled.newValue !== false;
+        render_moss_enabled();
+    }
     if (changes.updates) {
         app.updates = changes.updates.newValue || {};
         if (app.tab === 'options' && current() !== null) {
@@ -1995,6 +2009,7 @@ async function main() {
     wire();
     await load_all();
     await load_status();
+    render_moss_enabled();
     render_tree();
     setInterval(watch_local_files, 1500);
     const params = new URLSearchParams(location.search);

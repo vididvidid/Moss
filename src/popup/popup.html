@@ -11,8 +11,13 @@
     <img src="../../icons/icon48.png" alt="" width="20" height="20">
     <strong>Moss</strong>
     <span class="spacer"></span>
+    <label class="moss-enabled" title="Switch every script on or off at once. Each script keeps its own toggle.">
+      <input type="checkbox" class="switch" id="moss-enabled"> <span id="moss-enabled-label">On</span></label>
     <button class="btn ghost" id="open-dashboard" title="Open the dashboard">Dashboard</button>
   </header>
+  <div id="off-banner" class="banner" hidden>
+    Moss is switched off: no scripts run anywhere.
+  </div>
   <div id="banner" class="banner" hidden>
     User scripts are switched off for Moss.
     <button class="btn" id="fix">Turn on "Allow User Scripts"</button>
