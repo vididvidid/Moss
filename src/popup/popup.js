@@ -1,10 +1,26 @@
 'use strict';
 /*
  * Toolbar popup: scripts on this tab, background scripts, menu commands and errors.
+ * Only scripts whose @match / @include / @exclude (plus per-script overrides) cover the
+ * tab's address are listed.
+ *
+ * struct popup {
+ *     tab: chrome tab | null;       the active tab
+ *     on_toggle: 'reload' | 'button' | 'nothing';   setting popup.on_toggle
+ *     settings: resolved settings;
+ * }
  */
+import { with_blocked_pages } from '../lib/bundler.js';
 import { parse_meta, url_matches } from '../lib/meta.js';
 import { request_permissions_for } from '../lib/permissions.js';
-import { load_moss_enabled, load_scripts, patch_script, save_moss_enabled } from '../lib/store.js';
+import { resolve_settings } from '../lib/settings.js';
+import { load_moss_enabled, load_scripts, load_settings_raw, patch_script, save_moss_enabled } from '../lib/store.js';
+
+const popup = {
+    tab: null,
+    on_toggle: 'reload',
+    settings: resolve_settings({}),
+};
 
 /*
  * $(id) -> the element with that id
@@ -36,6 +52,37 @@ async function open_dashboard(query) {
 }
 
 /*
+ * reload_tab() — reload the active tab once the service worker has re-registered scripts
+ */
+async function reload_tab() {
+    $('reload-bar').hidden = true;
+    if (popup.tab === null) {
+        return;
+    }
+    try {
+        await chrome.runtime.sendMessage({ type: 'sync.wait' });
+    } catch (e) {
+        // worker unreachable: reload anyway, the change is stored
+    }
+    await chrome.tabs.reload(popup.tab.id);
+}
+
+/*
+ * after_toggle(affects_page) — what popup.on_toggle says to do after a switch changed.
+ * affects_page is false for background scripts, which restart without a reload.
+ */
+function after_toggle(affects_page) {
+    if (!affects_page || popup.on_toggle === 'nothing') {
+        return;
+    }
+    if (popup.on_toggle === 'button') {
+        $('reload-bar').hidden = false;
+        return;
+    }
+    reload_tab();
+}
+
+/*
  * mode_of(s) -> the sandbox a script runs in, options first
  */
 function mode_of(s) {
@@ -58,6 +105,7 @@ function script_row(s, status) {
             await request_permissions_for(s.code); // first await: keeps the user gesture
         }
         await patch_script(s.id, { enabled: toggle.checked });
+        after_toggle(mode_of(s) !== 'extension');
     });
 
     const name = el('span', 'name', s.meta.name || '(unnamed)');
@@ -122,23 +170,35 @@ function render_moss_enabled(on) {
 }
 
 /*
+ * runs_here(s, url) -> true if the script belongs in the popup for url. Page scripts need
+ * a matching rule; background scripts show everywhere unless they declare their own sites.
+ */
+function runs_here(s, url) {
+    const options = with_blocked_pages(s.options || {}, popup.settings);
+    if (mode_of(s) !== 'extension') {
+        return url !== '' && url_matches(s.meta, url, options);
+    }
+    const has_rules = s.meta.match.length > 0 || s.meta.include.length > 0 || (options.matches || []).length > 0;
+    return !has_rules || (url !== '' && url_matches(s.meta, url, options));
+}
+
+/*
  * main() — build the popup for the active tab
  */
 async function main() {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     const tab = tabs.length > 0 ? tabs[0] : null;
     const url = tab !== null && tab.url ? tab.url : '';
+    popup.tab = tab;
+    popup.settings = resolve_settings(await load_settings_raw());
+    popup.on_toggle = popup.settings['popup.on_toggle'];
     const stored = await load_scripts();
     const reply = await chrome.runtime.sendMessage({ type: 'status' });
     const status = reply && reply.ok ? reply.value : {};
 
     $('banner').hidden = status.user_scripts !== false;
     render_moss_enabled(await load_moss_enabled());
-    $('moss-enabled').addEventListener('change', async function () {
-        const on = $('moss-enabled').checked;
-        render_moss_enabled(on);
-        await save_moss_enabled(on);
-    });
+    $('reload').addEventListener('click', reload_tab);
     $('fix').addEventListener('click', function () {
         chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
     });
@@ -155,13 +215,22 @@ async function main() {
     for (const id of Object.keys(stored)) {
         const s = Object.assign({}, stored[id], { meta: parse_meta(stored[id].code).meta });
         names[s.id] = s.meta.name;
+        if (!runs_here(s, url) || (!s.enabled && popup.settings['popup.hide_disabled'])) {
+            continue;
+        }
         if (mode_of(s) === 'extension') {
             background.push(script_row(s, status));
-        } else if (url_matches(s.meta, url, s.options)) {
+        } else {
             on_page.push(script_row(s, status));
         }
     }
-    fill($('page-scripts'), on_page, 'No scripts match this page.');
+    fill($('page-scripts'), on_page, url === '' ? 'Moss cannot read this tab\'s address.' : 'No scripts match this page.');
+    $('moss-enabled').addEventListener('change', async function () {
+        const on = $('moss-enabled').checked;
+        render_moss_enabled(on);
+        await save_moss_enabled(on);
+        after_toggle(on_page.length > 0);
+    });
     $('bg-section').hidden = background.length === 0;
     fill($('bg-scripts'), background);
 

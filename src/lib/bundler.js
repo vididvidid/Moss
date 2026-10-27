@@ -22,9 +22,10 @@
  *     delay: number;
  *     early: boolean;                            document_start + values: start at once from a
  *                                                values snapshot instead of waiting for them
+ *     context_menu: boolean;                     @run-at context-menu: run from the right-click menu
  * }
  */
-import { parse_meta, targets } from './meta.js';
+import { meta_block, parse_meta, parse_resources, targets } from './meta.js';
 import { ALL_API, CHROME_PERMISSION, FEATURES, RUNTIME_CORE, RUNTIME_RELAY, runtime_feature, runtime_transport } from '../shared/features.js';
 
 export const MOSS_VERSION = '0.2.0';
@@ -151,7 +152,7 @@ export async function plan(script, args) {
     const meta = parsed.meta;
     const errors = parsed.errors;
     const warnings = parsed.warnings;
-    const opt = script.options || {};
+    const opt = with_blocked_pages(script.options || {}, settings);
     const mode = opt.sandbox || meta.sandbox;
     const inject = opt.inject || meta.inject;
     const raw = inject === 'raw';
@@ -254,8 +255,13 @@ export async function plan(script, args) {
         }
     }
 
+    if (feature_names.includes('resource') && meta.resource.length > parse_resources(meta).length) {
+        warnings.push('An @resource line could not be read — expected "@resource name https://…".');
+    }
+
     const transport = pick_transport(mode, target, host_features.length);
     const placed = mode === 'extension' ? null : targets(meta, opt);
+    const context_menu = placed !== null && placed.run_at === 'context_menu';
     return {
         meta: meta,
         errors: errors,
@@ -277,7 +283,40 @@ export async function plan(script, args) {
         aliases: aliases,
         delay: Number(opt.delay) || 0,
         early: placed !== null && placed.run_at === 'document_start' && host_features.includes('values'),
+        context_menu: context_menu,
     };
+}
+
+/*
+ * with_blocked_pages(opt, settings) -> the script options plus the global
+ * "Never run scripts on these pages" list as extra excludes
+ */
+export function with_blocked_pages(opt, settings) {
+    const blocked = settings ? settings['security.blocked_pages'] : null;
+    if (!blocked || blocked.length === 0) {
+        return opt;
+    }
+    return Object.assign({}, opt, { excludes: (opt.excludes || []).concat(blocked) });
+}
+
+/*
+ * bundle_resources(p, sources) -> { [name]: { url, mime, data } } for the script's
+ * @resource files; one that can't be fetched is left out and logged
+ */
+async function bundle_resources(p, sources) {
+    const out = {};
+    if (!sources.resource) {
+        return out;
+    }
+    for (const res of parse_resources(p.meta)) {
+        try {
+            const file = await sources.resource(res.url);
+            out[res.name] = { url: res.url, mime: file.mime, data: file.data };
+        } catch (e) {
+            console.warn(`Moss: @resource ${res.name}: ${e.message}`);
+        }
+    }
+    return out;
 }
 
 /*
@@ -318,9 +357,18 @@ export async function build(p, args) {
         version: MOSS_VERSION,
         info: {
             name: p.meta.name, namespace: p.meta.namespace, version: p.meta.version,
-            description: p.meta.description, author: p.meta.author, grant: p.meta.grant,
-            matches: p.meta.match, 'run-at': p.meta.run_at.replace('_', '-'),
+            description: p.meta.description, author: p.meta.author, copyright: p.meta.copyright,
+            icon: p.meta.icon, homepage: p.meta.homepage, supportURL: p.meta.support_url,
+            updateURL: p.meta.update_url, downloadURL: p.meta.download_url,
+            grant: p.meta.grant, matches: p.meta.match, includes: p.meta.include,
+            excludes: p.meta.exclude, 'exclude-match': p.meta.exclude_match, connects: p.meta.connect,
+            requires: p.meta.require, tags: p.meta.tag, resources: parse_resources(p.meta),
+            'run-at': p.meta.run_at.replace('_', '-'), noframes: p.meta.noframes, sandbox: p.mode,
+            options: { inject_into: p.mode, run_at: p.inject_at },
         },
+        meta_str: meta_block(script.code),
+        will_update: !!(script.source && script.source.auto),
+        resources: feature_names.includes('resource') ? await bundle_resources(p, sources) : {},
         features: feature_names,
         params: ALL_API.concat(Object.keys(p.aliases)),
         aliases: p.aliases,

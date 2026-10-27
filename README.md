@@ -14,6 +14,8 @@ A modular userscript manager for Chromium (Manifest V3), written from scratch. I
 
 The **On/Off** switch at the top of the toolbar popup, next to **Dashboard**, turns every script off at once. Each script keeps its own Enabled setting, so switching Moss back on restores them as they were. While Moss is off, the toolbar icon shows "off".
 
+The popup lists only the scripts whose `@match` / `@include` rules cover the current page (background scripts show everywhere unless they declare their own `@match`). Switching a script or Moss on or off from the popup reloads the page so the change takes effect. To show a "Reload page" button instead, or do nothing, change **Settings → Popup**.
+
 ## A script
 
 ```js
@@ -43,23 +45,26 @@ toast('Comments hidden');
 | `extension` (`native`, `background`) | background, no page | `@grant chrome.history` → `await moss.chrome.history.search({ text: '' })`, `moss.chrome.history.onVisited.addListener(fn)` |
 
 Other header keys:
-- `@match`, `@exclude-match`, `@include`/`@exclude` (globs or `/regex/`), `@run-at`, `@noframes`
-- `@use path [as name]`, `@require url` (fetched once and cached)
-- `@grant` (`GM_xmlhttpRequest`, `GM_download`, `chrome.<namespace>`), `@connect`
-- `@folder a/b` (place in the sidebar), `@inject raw` (no wrapper)
+- `@match`, `@exclude-match`, `@include`/`@exclude` (globs or `/regex/`), `@run-at` (including `context-menu`, Chrome 135+), `@noframes`
+- `@use path [as name]`, `@require url` (fetched once and cached; `#sha256=…` hashes are checked)
+- `@resource name url` (fetched once and bundled, for `GM_getResourceText`/`GM_getResourceURL`)
+- `@grant` (`GM_xmlhttpRequest`, `GM_download`, `GM_cookie`, `window.close`, `window.focus`, `window.onurlchange`, `chrome.<namespace>`), `@connect`
+- `@folder a/b` (place in the sidebar), `@inject raw` or `@unwrap` (no wrapper)
 - `@strict` (run the script in strict mode — recommended)
 
 APIs:
-- `GM_getValue`/`setValue`/`deleteValue`/`listValues`, `GM_addValueChangeListener`/`GM_removeValueChangeListener` (also fires for changes made in another tab)
+- `GM_getValue`/`setValue`/`deleteValue`/`listValues`, `GM_getValues`/`setValues`/`deleteValues`, `GM_addValueChangeListener`/`GM_removeValueChangeListener` (also fires for changes made in another tab)
+- `GM_getResourceText`, `GM_getResourceURL`, `GM_getTab`/`saveTab`/`getTabs`, `GM_cookie.list`/`set`/`delete`, `window.onurlchange`
 - `GM_addStyle`, `GM_addElement`
 - `GM_xmlhttpRequest`, `GM_notification`, `GM_download`
-- `GM_registerMenuCommand` (commands show in the toolbar popup)
+- `GM_registerMenuCommand` (commands show in the toolbar popup and the right-click menu)
 - `GM_openInTab` (`active`, `insert`, `setParent`; the handle's `closed`/`onclose` follow the real tab), `GM_setClipboard`, `GM_info`
 - `GM.*` promise versions, `moss.chrome`, `require()`
 - Top-level `await` works.
 
 **Tampermonkey compatibility details**
 - **Early start:** a `@run-at document-start` script that uses GM values carries a snapshot of them and starts right away, before the page's own scripts. The live values replace the snapshot a moment later.
+- **Manager:** opening a `.user.js` link offers to install it; a global "Never run scripts on these pages" list; deleted scripts go to a trash; the toolbar badge counts scripts running on the tab; Tampermonkey-style editor shortcuts, customisable in Settings → Editor.
 - **`GM_xmlhttpRequest`:** supports `onloadstart`, `onreadystatechange`, `onprogress`, `onload`, `onerror`, `ontimeout`, `onabort` and `onloadend`, with `responseType` `json`, `document`, `arraybuffer` or `blob`.
 
 ## Import from GitHub and keep scripts updated
@@ -134,6 +139,7 @@ npm run icons    # regenerate icons/
 
 ## Limits (v0.2)
 - Chromium only. Firefox has no offscreen documents, so `extension` mode would need a different runner.
-- `@resource` and `GM_getResourceText` are not implemented yet. Updates follow the URL you imported from, not `@updateURL`.
+- Updates follow the URL you imported from, not `@updateURL`. `md5` integrity hashes are not checked (Web Crypto has no MD5).
+- Not implemented: `GM_webRequest` (deprecated in Tampermonkey too), `GM_audio`, cloud sync, `@run-in` (incognito / containers), a page whitelist mode.
 - `unsafeWindow` in `isolated` mode is the sandbox's own `window`. Use `@sandbox page` for page globals.
 - In an exported *background* script, start-up is synchronous, so that `chrome.*` listeners register on the service worker's first turn. Read values with `await GM.getValue(...)` there.

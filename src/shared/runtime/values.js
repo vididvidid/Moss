@@ -175,7 +175,65 @@
         return Object.keys(values);
     }
 
+    /*
+     * get_values(keys) -> { key: value } for an array of keys, or for an object of
+     * key: fallback pairs (Tampermonkey's GM_getValues)
+     */
+    function get_values(keys) {
+        const out = {};
+        if (Array.isArray(keys)) {
+            for (const key of keys) {
+                if (Object.prototype.hasOwnProperty.call(values, key)) {
+                    out[key] = clone(values[key]);
+                }
+            }
+            return out;
+        }
+        for (const key of Object.keys(keys || {})) {
+            out[key] = get_value(key, keys[key]);
+        }
+        return out;
+    }
+
+    /*
+     * set_values(obj) -> Promise; stores every key of obj
+     */
+    function set_values(obj) {
+        const writes = [];
+        for (const key of Object.keys(obj || {})) {
+            change(key, obj[key], false);
+            writes.push(persist(key, values[key]));
+        }
+        return Promise.all(writes);
+    }
+
+    /*
+     * delete_values(keys) -> Promise; forgets every key in the array
+     */
+    function delete_values(keys) {
+        const writes = [];
+        for (const key of keys || []) {
+            change(key, undefined, false);
+            writes.push(persist(key, undefined));
+        }
+        return Promise.all(writes);
+    }
+
     api.GM_getValue = get_value;
+    api.GM_getValues = get_values;
+    api.GM_setValues = function (obj) {
+        set_values(obj).catch(rt.report);
+    };
+    api.GM_deleteValues = function (keys) {
+        delete_values(keys).catch(rt.report);
+    };
+    gm.getValues = function (keys) {
+        return loaded.then(function () {
+            return get_values(keys);
+        });
+    };
+    gm.setValues = set_values;
+    gm.deleteValues = delete_values;
     api.GM_setValue = set_value;
     api.GM_deleteValue = delete_value;
     api.GM_listValues = list_values;

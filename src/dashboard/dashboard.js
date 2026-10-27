@@ -28,8 +28,12 @@ import * as store from '../lib/store.js';
 import { EVERY_OPTIONS, apply_update, check_for_update, sha256, source_create } from '../lib/updater.js';
 import { zip } from '../lib/zip.js';
 import { BUILTIN_MODULES, FEATURES } from '../shared/features.js';
+import { COMMANDS, event_key, keymap, trim_trailing } from './editor_keys.js';
 
 const MODULE_NAME_RE = /^[\w-]+(\/[\w.-]+)*$/;
+// Commands that don't change the text, so they also work on read-only built-in modules.
+const READ_ONLY_COMMANDS = ['find', 'find_next', 'find_previous', 'jump_to_line', 'matching_bracket', 'save'];
+const editor_search = { query: '', replacement: '' };
 
 const app = {
     scripts: {},
@@ -146,7 +150,7 @@ function debounce(fn, ms) {
  * sources() -> struct sources over the current user modules
  */
 function sources() {
-    return sources_create(app.modules);
+    return sources_create(app.modules, app.settings);
 }
 
 /*
@@ -502,14 +506,64 @@ function update_gutter() {
 }
 
 /*
- * on_editor_key(event) — Tab inserts spaces instead of leaving the editor
+ * editor_ctx() -> struct editor_ctx for the shortcut commands (see editor_keys.js)
+ */
+function editor_ctx() {
+    const tabs = app.settings['editor.indent_with'] === 'tabs';
+    return {
+        el: $('code'),
+        indent: tabs ? '\t' : ' '.repeat(app.settings['editor.tab_size'] || 4),
+        save: function () {
+            if (app.sel !== null && app.sel.kind !== 'builtin') {
+                save();
+            }
+        },
+        ask: function (question, value) {
+            if (value === null) {
+                toast(question);
+                return null;
+            }
+            return prompt(question, value || '');
+        },
+        search: editor_search,
+    };
+}
+
+/*
+ * on_editor_key(event) — run the command bound to the pressed keys (Settings → Editor)
  */
 function on_editor_key(event) {
-    if (event.key !== 'Tab' || event.ctrlKey || event.metaKey || $('code').readOnly) {
+    const command = keymap(app.settings['editor.keys']).map[event_key(event)];
+    if (command === undefined || COMMANDS[command] === undefined) {
+        return;
+    }
+    if ($('code').readOnly && !READ_ONLY_COMMANDS.includes(command)) {
         return;
     }
     event.preventDefault();
-    document.execCommand('insertText', false, ' '.repeat(app.settings['editor.tab_size'] || 4));
+    COMMANDS[command].run(editor_ctx());
+}
+
+/*
+ * render_key_docs() — the "Editor shortcuts" table in Docs, from the live key map
+ */
+function render_key_docs() {
+    const result = keymap(app.settings['editor.keys']);
+    const keys_of = {};
+    for (const key of Object.keys(result.map)) {
+        const name = result.map[key];
+        keys_of[name] = (keys_of[name] || []).concat(key);
+    }
+    const rows = [h('tr', null, h('th', null, 'Command'), h('th', null, 'Name for custom shortcuts'), h('th', null, 'Keys'))];
+    for (const name of Object.keys(COMMANDS)) {
+        rows.push(h('tr', null, h('td', null, COMMANDS[name].label), h('td', null, h('code', null, name)),
+            h('td', null, (keys_of[name] || ['—']).join(', '))));
+    }
+    const nodes = [h('table', null, rows)];
+    if (result.errors.length > 0) {
+        nodes.push(h('p', { class: 'error' }, `Ignored custom shortcut lines: ${result.errors.join(' | ')}`));
+    }
+    $('keys-doc').replaceChildren(...nodes);
 }
 
 /*
@@ -577,6 +631,12 @@ async function save_module(code) {
  * save() — save the editor (Ctrl+S)
  */
 async function save() {
+    if (app.settings['editor.trim_trailing'] && trim_trailing($('code').value) !== $('code').value) {
+        const at = $('code').selectionStart;
+        $('code').value = trim_trailing($('code').value);
+        $('code').setSelectionRange(at, at);
+        update_gutter();
+    }
     const code = $('code').value;
     if (app.sel.kind === 'script') {
         const missing = await request_permissions_for(code); // first await: keeps the user gesture
@@ -603,10 +663,17 @@ async function delete_selected() {
     const kind = app.sel.kind;
     const id = app.sel.id;
     if (kind === 'script') {
-        if (!confirm(`Delete "${parse_meta(app.scripts[id].code).meta.name}" and its stored values?`)) {
+        const name = parse_meta(app.scripts[id].code).meta.name;
+        const to_trash = app.settings['general.trash'];
+        const question = to_trash ? `Move "${name}" to the trash? You can restore it from Settings → Trash.` : `Delete "${name}" and its stored values for good?`;
+        if (!confirm(question)) {
             return;
         }
-        await store.remove_script(id);
+        if (to_trash) {
+            await store.trash_script(id);
+        } else {
+            await store.remove_script(id);
+        }
         delete app.scripts[id];
     } else {
         let users = 0;
@@ -674,6 +741,9 @@ function render_moss_enabled() {
  */
 function template(site) {
     const s = app.settings;
+    if (s['new.template'] && s['new.template'].trim() !== '') {
+        return fill_template(s['new.template'], site);
+    }
     const lines = [
         ['name', 'New script'], ['namespace', s['new.namespace']], ['version', '0.1.0'], ['description', 'What does it do?'],
     ];
@@ -704,6 +774,23 @@ function template(site) {
     }
     const body = toast_alias !== null ? `${toast_alias}('Hello from Moss 👋');\n` : 'console.log(\'Hello from Moss 👋\');\n';
     return `// ==UserScript==\n${header}// ==/UserScript==\n\n${body}`;
+}
+
+/*
+ * fill_template(text, site) -> the user's "New script template" with its placeholders filled
+ */
+function fill_template(text, site) {
+    const match = site ? `${site}/*` : 'https://example.com/*';
+    const values = {
+        NAME: 'New script',
+        URL: site || 'https://example.com',
+        MATCH: match,
+        DATE: new Date().toISOString().slice(0, 10),
+        NAMESPACE: app.settings['new.namespace'],
+    };
+    return text.replace(/<\$(\w+)\$>/g, function (whole, key) {
+        return values[key] !== undefined ? values[key] : whole;
+    });
 }
 
 /*
@@ -1192,6 +1279,14 @@ function schema_input(def, value, on_change) {
             },
         }, option_nodes);
     }
+    if (def.type === 'textarea') {
+        return h('textarea', {
+            rows: 8, class: 'json', spellcheck: false,
+            on_change: function (event) {
+                on_change(event.target.value);
+            },
+        }, value || '');
+    }
     if (def.type === 'list') {
         return h('textarea', {
             rows: 3, placeholder: 'One per line',
@@ -1614,6 +1709,59 @@ function render_settings() {
 }
 
 /*
+ * render_trash() — the Trash section: restore or delete scripts for good
+ */
+async function render_trash() {
+    const trash = await store.load_trash();
+    const ids = Object.keys(trash);
+    ids.sort(function (a, b) {
+        return trash[b].deleted_at - trash[a].deleted_at;
+    });
+    const rows = [];
+    for (const id of ids) {
+        const item = trash[id];
+        rows.push(h('div', { class: 'row' },
+            h('span', { class: 'spacer' }, parse_meta(item.script.code).meta.name || '(unnamed)'),
+            h('span', { class: 'hint' }, new Date(item.deleted_at).toLocaleString()),
+            h('button', {
+                class: 'btn',
+                on_click: async function () {
+                    const s = await store.restore_script(id);
+                    if (s !== null) {
+                        app.scripts[id] = s;
+                        render_tree();
+                        toast('Restored');
+                    }
+                    render_trash();
+                },
+            }, 'Restore'),
+            h('button', {
+                class: 'btn danger',
+                on_click: async function () {
+                    if (confirm('Delete it for good?')) {
+                        await store.purge_trash(id);
+                        render_trash();
+                    }
+                },
+            }, 'Delete for good')));
+    }
+    if (rows.length === 0) {
+        rows.push(h('p', { class: 'hint' }, 'The trash is empty.'));
+    } else {
+        rows.push(h('div', { class: 'row' }, h('button', {
+            class: 'btn danger',
+            on_click: async function () {
+                if (confirm(`Delete all ${ids.length} trashed script(s) for good?`)) {
+                    await store.purge_trash(null);
+                    render_trash();
+                }
+            },
+        }, 'Empty trash')));
+    }
+    $('trash').replaceChildren(...rows);
+}
+
+/*
  * reset_settings() — back to the defaults
  */
 async function reset_settings() {
@@ -1645,7 +1793,12 @@ async function export_backup() {
         settings: all.settings || {},
         updates: all.updates || {},
         values: values,
+        trash: all.trash || {},
     };
+    if (app.settings['backup.include_externals']) {
+        data.require_cache = all.require_cache || {};
+        data.resource_cache = all.resource_cache || {};
+    }
     const name = `moss-backup-${new Date().toISOString().slice(0, 10)}.json`;
     download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), name);
 }
@@ -1670,12 +1823,23 @@ async function import_backup(file) {
         const scripts = await store.load_scripts();
         const modules = await store.load_modules();
         const updates = await store.load_updates();
-        await chrome.storage.local.set(Object.assign({
+        const patch = {
             scripts: Object.assign(scripts, data.scripts),
             modules: Object.assign(modules, data.modules),
             updates: Object.assign(updates, data.updates),
             settings: Object.assign({}, app.settings, data.settings),
-        }, data.values));
+        };
+        if (data.trash) {
+            patch.trash = Object.assign(await store.load_trash(), data.trash);
+        }
+        const caches = await chrome.storage.local.get(['require_cache', 'resource_cache']);
+        if (data.require_cache) {
+            patch.require_cache = Object.assign(caches.require_cache || {}, data.require_cache);
+        }
+        if (data.resource_cache) {
+            patch.resource_cache = Object.assign(caches.resource_cache || {}, data.resource_cache);
+        }
+        await chrome.storage.local.set(Object.assign(patch, data.values));
         await load_all();
         render_tree();
         render_settings();
@@ -1894,6 +2058,10 @@ function wire() {
         }
         if (view === 'settings') {
             render_settings();
+            render_trash();
+        }
+        if (view === 'docs') {
+            render_key_docs();
         }
     });
 
@@ -1907,7 +2075,15 @@ function wire() {
         refresh_problems();
     });
     $('code').addEventListener('keydown', on_editor_key);
+    $('code').addEventListener('blur', function () {
+        if (app.settings['editor.save_on_blur'] && app.dirty && app.sel !== null && app.sel.kind !== 'builtin') {
+            save();
+        }
+    });
     document.addEventListener('keydown', function (event) {
+        if (event.defaultPrevented) {
+            return; // the editor already handled it
+        }
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
             event.preventDefault();
             if (app.sel !== null && app.sel.kind !== 'builtin') {
@@ -2015,7 +2191,13 @@ async function main() {
     const params = new URLSearchParams(location.search);
     const id = params.get('id');
     const module_name = params.get('module');
-    if (params.has('new')) {
+    if (params.has('install')) {
+        // Opened by the service worker for a .user.js link: show it in the import dialog.
+        open_import();
+        $('im-url').value = params.get('install');
+        history.replaceState(null, '', '?');
+        await lookup();
+    } else if (params.has('new')) {
         await create_script(template(params.get('new')));
     } else if (id && app.scripts[id]) {
         await select('script', id);

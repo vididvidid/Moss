@@ -27,7 +27,8 @@
     "unlimitedStorage",
     "offscreen",
     "alarms",
-    "notifications"
+    "notifications",
+    "contextMenus"
   ],
   "optional_permissions": [
     "history",
