@@ -18,11 +18,19 @@ A modular userscript manager for Chromium (Manifest V3), written from scratch. I
 // ==UserScript==
 // @name         Hide comments
 // @match        https://news.example.com/*
+// @strict
 // @use          moss/dom/wait as wait
 // @use          moss/ui/toast as toast
 // ==/UserScript==
 
-wait.observe('.comments', (el) => el.remove());
+/*
+ * hide(el) — remove one comment section
+ */
+function hide(el) {
+    el.remove();
+}
+
+wait.observe('.comments', hide);
 toast('Comments hidden');
 ```
 
@@ -37,6 +45,7 @@ Other header keys:
 - `@use path [as name]`, `@require url` (fetched once and cached)
 - `@grant` (`GM_xmlhttpRequest`, `GM_download`, `chrome.<namespace>`), `@connect`
 - `@folder a/b` (place in the sidebar), `@inject raw` (no wrapper)
+- `@strict` (run the script in strict mode — recommended)
 
 APIs:
 - `GM_getValue`/`setValue`/`deleteValue`/`listValues`
@@ -89,15 +98,34 @@ src/dashboard/, src/popup/
 2. Add `src/shared/runtime/<name>.js`.
 3. If the feature needs extension privileges, add `src/shared/host/<name>.js` and import it in `src/background.js`.
 
+## Strict mode & C-style JavaScript
+
+Moss is written as strict-mode, C-style JavaScript. The rules are in [STYLE.md](STYLE.md):
+- `'use strict'` first in every file;
+- snake_case names;
+- function declarations with a `name(args) -> result` comment;
+- plain `for` loops instead of `map`/`filter`;
+- braces everywhere;
+- no `var`, `?.` or `??`.
+
+`npm test` runs a zero-dependency checker (`tests/style.test.js`) that fails on any violation, with `file:line`.
+
+**Recommended for your scripts too.** Strict mode turns silent mistakes into errors. For example, assigning to a misspelled variable throws instead of quietly creating a global. You can switch it on in three ways:
+- add `// @strict` to a script's header (new scripts get it by default);
+- set it per script in the Options tab;
+- set it for every script in Settings → Runtime.
+
+Moss's own runtime code always runs strict, but it never forces strict mode on your code. That keeps sloppy scripts imported from elsewhere working.
+
 ## Development
 
 ```sh
-npm test         # bundler, exporter, zip, runtime ↔ host protocol, an exported background script run in a VM
+npm test         # style checker, bundler, exporter, zip, runtime ↔ host protocol, strict mode, storage migration
 npm run check    # syntax-check every file
 npm run icons    # regenerate icons/
 ```
 
-## Limits (v0.1)
+## Limits (v0.2)
 - Chromium only. Firefox has no offscreen documents, so `extension` mode would need a different runner.
 - `@resource`, `GM_getResourceText` and `GM_addValueChangeListener` are not implemented yet. Updates follow the URL you imported from, not `@updateURL`.
 - `unsafeWindow` in `isolated` mode is the sandbox's own `window`. Use `@sandbox page` for page globals.

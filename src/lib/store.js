@@ -1,79 +1,169 @@
-// chrome.storage.local layout:
-//   scripts  { [id]: { id, code, enabled, options, source?, createdAt, updatedAt } }
-//   modules  { [name]: { name, code, updatedAt } }   — names like "utils/text"
-//   settings { [key]: value }                         — see settings.js
-//   tokens   { [id]: secret }                         — authenticates script ports
-//   values:<id>                                       — a script's GM values
-//   updates  { [id]: { checkedAt, status, error } }   — last source check (see updater.js)
-const area = chrome.storage.local;
-const read = async (key, fallback) => (await area.get(key))[key] ?? fallback;
+'use strict';
+/*
+ * chrome.storage.local layout (schema_version 2):
+ *   scripts  { [id]: struct script }
+ *   modules  { [name]: { name, code, updated_at } }   — names like "utils/text"
+ *   settings { [key]: value }                         — see settings.js
+ *   tokens   { [id]: secret }                         — authenticates script ports
+ *   updates  { [id]: { checked_at, status, error, version, updated_at } } — see updater.js
+ *   values:<id>                                       — a script's GM values
+ *   schema_version: 2                                 — see migrate.js
+ *
+ * struct script {
+ *     id: string;
+ *     code: string;
+ *     enabled: boolean;
+ *     options: { [key]: value };   per-script overrides, see SCRIPT_OPTIONS
+ *     source: struct source | null; where it was imported from, see updater.js
+ *     created_at, updated_at: number;
+ * }
+ */
+const AREA = chrome.storage.local;
 
-export const loadScripts = () => read('scripts', {});
-export const loadModules = () => read('modules', {});
-export const loadSettingsRaw = () => read('settings', {});
-
-export function newId() {
-  return 's' + crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+/*
+ * read(key, fallback) -> the stored value of key, or fallback when missing
+ */
+async function read(key, fallback) {
+    const got = await AREA.get(key);
+    if (got[key] === undefined || got[key] === null) {
+        return fallback;
+    }
+    return got[key];
 }
 
-export async function putScript(script) {
-  const scripts = await loadScripts();
-  scripts[script.id] = { options: {}, ...script, updatedAt: Date.now() };
-  await area.set({ scripts });
-  return scripts[script.id];
+/*
+ * load_scripts() -> { [id]: struct script }
+ */
+export function load_scripts() {
+    return read('scripts', {});
 }
 
-export async function patchScript(id, patch) {
-  const scripts = await loadScripts();
-  if (!scripts[id]) return null;
-  scripts[id] = { ...scripts[id], ...patch, updatedAt: Date.now() };
-  await area.set({ scripts });
-  return scripts[id];
+/*
+ * load_modules() -> { [name]: { name, code, updated_at } }
+ */
+export function load_modules() {
+    return read('modules', {});
 }
 
-export async function removeScript(id) {
-  const scripts = await loadScripts();
-  delete scripts[id];
-  await area.set({ scripts });
-  await area.remove(`values:${id}`);
+/*
+ * load_settings_raw() -> only the settings the user changed (see resolve_settings)
+ */
+export function load_settings_raw() {
+    return read('settings', {});
 }
 
-export async function putModule(name, code) {
-  const modules = await loadModules();
-  modules[name] = { name, code, updatedAt: Date.now() };
-  await area.set({ modules });
+/*
+ * load_updates() -> { [id]: last update check }
+ */
+export function load_updates() {
+    return read('updates', {});
 }
 
-export async function removeModule(name) {
-  const modules = await loadModules();
-  delete modules[name];
-  await area.set({ modules });
+/*
+ * new_id() -> a fresh script id such as "s3f9c0a1b2c4d"
+ */
+export function new_id() {
+    return 's' + crypto.randomUUID().replace(/-/g, '').slice(0, 12);
 }
 
-export async function saveSettings(settings) {
-  await area.set({ settings });
+/*
+ * put_script(script) -> the stored struct script (created or replaced)
+ */
+export async function put_script(script) {
+    const scripts = await load_scripts();
+    scripts[script.id] = Object.assign({ options: {}, source: null }, script, { updated_at: Date.now() });
+    await AREA.set({ scripts: scripts });
+    return scripts[script.id];
 }
 
-export async function tokensFor(ids) {
-  const tokens = await read('tokens', {});
-  let changed = false;
-  for (const id of ids) if (!tokens[id]) { tokens[id] = crypto.randomUUID(); changed = true; }
-  if (changed) await area.set({ tokens });
-  return tokens;
+/*
+ * patch_script(id, patch) -> the updated struct script, or null if id is unknown
+ */
+export async function patch_script(id, patch) {
+    const scripts = await load_scripts();
+    if (scripts[id] === undefined) {
+        return null;
+    }
+    scripts[id] = Object.assign({}, scripts[id], patch, { updated_at: Date.now() });
+    await AREA.set({ scripts: scripts });
+    return scripts[id];
 }
 
-export async function loadValues(id) {
-  return read(`values:${id}`, {});
-}
-export async function saveValues(id, values) {
-  await area.set({ [`values:${id}`]: values });
+/*
+ * remove_script(id) — delete a script and its stored values
+ */
+export async function remove_script(id) {
+    const scripts = await load_scripts();
+    delete scripts[id];
+    await AREA.set({ scripts: scripts });
+    await AREA.remove(`values:${id}`);
 }
 
-// Last update check per script — kept apart from `scripts` so a check doesn't
-// trigger a rebuild of every script.
-export async function recordUpdate(id, info) {
-  const updates = await read('updates', {});
-  updates[id] = { ...updates[id], ...info, checkedAt: Date.now() };
-  await area.set({ updates });
+/*
+ * put_module(name, code) — create or replace a user module
+ */
+export async function put_module(name, code) {
+    const modules = await load_modules();
+    modules[name] = { name: name, code: code, updated_at: Date.now() };
+    await AREA.set({ modules: modules });
 }
-export const loadUpdates = () => read('updates', {});
+
+/*
+ * remove_module(name) — delete a user module
+ */
+export async function remove_module(name) {
+    const modules = await load_modules();
+    delete modules[name];
+    await AREA.set({ modules: modules });
+}
+
+/*
+ * save_settings(settings) — store the settings object
+ */
+export async function save_settings(settings) {
+    await AREA.set({ settings: settings });
+}
+
+/*
+ * tokens_for(ids) -> { [id]: secret }, creating a secret for each id that has none
+ */
+export async function tokens_for(ids) {
+    const tokens = await read('tokens', {});
+    let changed = false;
+    for (const id of ids) {
+        if (tokens[id] === undefined) {
+            tokens[id] = crypto.randomUUID();
+            changed = true;
+        }
+    }
+    if (changed) {
+        await AREA.set({ tokens: tokens });
+    }
+    return tokens;
+}
+
+/*
+ * load_values(id) -> a script's GM values
+ */
+export function load_values(id) {
+    return read(`values:${id}`, {});
+}
+
+/*
+ * save_values(id, values) — replace a script's GM values
+ */
+export async function save_values(id, values) {
+    const patch = {};
+    patch[`values:${id}`] = values;
+    await AREA.set(patch);
+}
+
+/*
+ * record_update(id, info) — remember the last update check of a script. Kept apart from
+ * `scripts` so a check doesn't trigger a rebuild of every script.
+ */
+export async function record_update(id, info) {
+    const updates = await load_updates();
+    updates[id] = Object.assign({}, updates[id], info, { checked_at: Date.now() });
+    await AREA.set({ updates: updates });
+}

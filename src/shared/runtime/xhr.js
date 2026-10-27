@@ -1,54 +1,126 @@
-/* Feature: xhr — GM_xmlhttpRequest, performed by the extension so it isn't bound by
-   the page's CORS rules. Request bodies: string, URLSearchParams or JSON-able object. */
+/*
+ * Feature: xhr — GM_xmlhttpRequest, performed by the extension so it isn't bound by
+ * the page's CORS rules. Request bodies: string, URLSearchParams or JSON-able object.
+ * The callbacks and response fields follow the Tampermonkey API.
+ */
 (function () {
-  function bytes(b64) {
-    var s = atob(b64), out = new Uint8Array(s.length);
-    for (var i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
-    return out;
-  }
-  function body(data) {
-    if (data == null || typeof data === 'string') return data;
-    if (typeof URLSearchParams !== 'undefined' && data instanceof URLSearchParams) return data.toString();
-    return JSON.stringify(data);
-  }
-  function response(r, d) {
-    var res = { readyState: 4, status: r.status, statusText: r.statusText, finalUrl: r.finalUrl,
-      responseHeaders: r.responseHeaders, responseText: r.responseText, response: r.responseText, context: d.context };
-    if (r.base64 != null) {
-      var b = bytes(r.base64);
-      res.responseText = undefined;
-      res.response = d.responseType === 'blob' ? new Blob([b]) : b.buffer;
-    } else if (d.responseType === 'json') {
-      try { res.response = JSON.parse(r.responseText); } catch (e) { res.response = null; }
+    'use strict';
+
+    /*
+     * base64_bytes(text) -> Uint8Array decoded from base64
+     */
+    function base64_bytes(text) {
+        const s = atob(text);
+        const out = new Uint8Array(s.length);
+        for (let i = 0; i < s.length; i++) {
+            out[i] = s.charCodeAt(i);
+        }
+        return out;
     }
-    return res;
-  }
 
-  function request(d) {
-    var aborted = false;
-    var req = { method: d.method || 'GET', url: String(d.url), headers: d.headers || {}, data: body(d.data),
-      timeout: d.timeout || 0, anonymous: !!d.anonymous,
-      binary: d.responseType === 'arraybuffer' || d.responseType === 'blob' };
-    var promise = M.call('xhr', [req]).then(function (r) {
-      var res = response(r, d);
-      if (!aborted) { if (d.onload) d.onload(res); if (d.onloadend) d.onloadend(res); }
-      return res;
-    }, function (e) {
-      var res = { readyState: 4, status: 0, error: e.message, finalUrl: req.url, context: d.context };
-      if (!aborted) {
-        var cb = /timed out/.test(e.message) && d.ontimeout ? d.ontimeout : d.onerror;
-        if (cb) cb(res);
-        if (d.onloadend) d.onloadend(res);
-      }
-      throw e;
-    });
-    return { promise: promise, abort: function () { aborted = true; if (d.onabort) d.onabort(); } };
-  }
+    /*
+     * request_body(data) -> something the extension can send
+     */
+    function request_body(data) {
+        if (data === null || data === undefined || typeof data === 'string') {
+            return data;
+        }
+        if (typeof URLSearchParams !== 'undefined' && data instanceof URLSearchParams) {
+            return data.toString();
+        }
+        return JSON.stringify(data);
+    }
 
-  M.api.GM_xmlhttpRequest = function (d) {
-    var r = request(d);
-    r.promise.catch(function () {});
-    return { abort: r.abort };
-  };
-  M.GM.xmlHttpRequest = function (d) { return request(d).promise; };
+    /*
+     * to_response(r, details) -> the Tampermonkey-style response object
+     */
+    function to_response(r, details) {
+        const res = {
+            readyState: 4, status: r.status, statusText: r.status_text, finalUrl: r.final_url,
+            responseHeaders: r.response_headers, responseText: r.response_text,
+            response: r.response_text, context: details.context,
+        };
+        if (r.base64 !== undefined && r.base64 !== null) {
+            const bytes = base64_bytes(r.base64);
+            res.responseText = undefined;
+            res.response = details.responseType === 'blob' ? new Blob([bytes]) : bytes.buffer;
+        } else if (details.responseType === 'json') {
+            try {
+                res.response = JSON.parse(r.response_text);
+            } catch (e) {
+                res.response = null;
+            }
+        }
+        return res;
+    }
+
+    /*
+     * request(details) -> { promise, abort }
+     */
+    function request(details) {
+        let aborted = false;
+        const req = {
+            method: details.method || 'GET',
+            url: String(details.url),
+            headers: details.headers || {},
+            data: request_body(details.data),
+            timeout: details.timeout || 0,
+            anonymous: !!details.anonymous,
+            binary: details.responseType === 'arraybuffer' || details.responseType === 'blob',
+        };
+
+        /*
+         * on_done(r) -> response, after calling onload/onloadend
+         */
+        function on_done(r) {
+            const res = to_response(r, details);
+            if (!aborted) {
+                if (details.onload) {
+                    details.onload(res);
+                }
+                if (details.onloadend) {
+                    details.onloadend(res);
+                }
+            }
+            return res;
+        }
+
+        /*
+         * on_fail(error) — call ontimeout/onerror and onloadend, then rethrow
+         */
+        function on_fail(error) {
+            const res = { readyState: 4, status: 0, error: error.message, finalUrl: req.url, context: details.context };
+            if (!aborted) {
+                const timed_out = /timed out/.test(error.message) && details.ontimeout;
+                const callback = timed_out ? details.ontimeout : details.onerror;
+                if (callback) {
+                    callback(res);
+                }
+                if (details.onloadend) {
+                    details.onloadend(res);
+                }
+            }
+            throw error;
+        }
+
+        const promise = rt.call('xhr', [req]).then(on_done, on_fail);
+        return {
+            promise: promise,
+            abort: function () {
+                aborted = true;
+                if (details.onabort) {
+                    details.onabort();
+                }
+            },
+        };
+    }
+
+    rt.api.GM_xmlhttpRequest = function (details) {
+        const r = request(details);
+        r.promise.catch(function () {});
+        return { abort: r.abort };
+    };
+    rt.gm.xmlHttpRequest = function (details) {
+        return request(details).promise;
+    };
 })();

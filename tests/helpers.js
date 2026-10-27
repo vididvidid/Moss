@@ -1,70 +1,158 @@
-// Test helpers: filesystem-backed bundle sources and a fake chrome for running bundles in a VM.
+'use strict';
+/*
+ * Test helpers: filesystem-backed bundle sources and a fake chrome for running bundles in a VM.
+ */
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { BUILTIN_MODULES } from '../src/shared/features.js';
 
 const ROOT = new URL('../', import.meta.url);
-export const read = (path) => readFileSync(new URL(path, ROOT), 'utf8');
 
-export function fsSources(userModules = {}) {
-  return {
-    text: async (path) => read(path),
-    module: async (name) => userModules[name] ?? (BUILTIN_MODULES[name] ? read(BUILTIN_MODULES[name]) : null),
-    require: async (url) => `/* stub for ${url} */ var requiredLib = 42;`,
-    binary: async (path) => new Uint8Array(readFileSync(new URL(path, ROOT))),
-  };
+/*
+ * read(path) -> text of a repo file
+ */
+export function read(path) {
+    return readFileSync(new URL(path, ROOT), 'utf8');
 }
 
-function event() {
-  const fns = [];
-  return {
-    fns,
-    addListener: (f) => fns.push(f),
-    removeListener: (f) => { const i = fns.indexOf(f); if (i >= 0) fns.splice(i, 1); },
-    emit: (...a) => fns.forEach((f) => f(...a)),
-  };
+/*
+ * fs_sources(user_modules) -> struct sources reading from the repo
+ */
+export function fs_sources(user_modules) {
+    const modules = user_modules || {};
+    return {
+        text: async function (path) {
+            return read(path);
+        },
+        module: async function (name) {
+            if (modules[name] !== undefined) {
+                return modules[name];
+            }
+            return BUILTIN_MODULES[name] !== undefined ? read(BUILTIN_MODULES[name]) : null;
+        },
+        require: async function (url) {
+            return `/* stub for ${url} */ var required_lib = 42;`;
+        },
+        binary: async function (path) {
+            return new Uint8Array(readFileSync(new URL(path, ROOT)));
+        },
+    };
 }
 
-// A connected pair of fake runtime ports.
-export function portPair(name) {
-  const a = { name, onMessage: event(), onDisconnect: event() };
-  const b = { name, onMessage: event(), onDisconnect: event() };
-  a.postMessage = (m) => queueMicrotask(() => b.onMessage.emit(structuredClone(m)));
-  b.postMessage = (m) => queueMicrotask(() => a.onMessage.emit(structuredClone(m)));
-  return [a, b];
+/*
+ * event_create() -> a fake chrome event with emit()
+ */
+function event_create() {
+    const fns = [];
+    return {
+        fns: fns,
+        addListener: function (fn) {
+            fns.push(fn);
+        },
+        removeListener: function (fn) {
+            const i = fns.indexOf(fn);
+            if (i >= 0) {
+                fns.splice(i, 1);
+            }
+        },
+        emit: function () {
+            for (const fn of fns.slice()) {
+                fn.apply(null, arguments);
+            }
+        },
+    };
 }
 
-export function fakeChrome(calls = []) {
-  const store = {};
-  const rec = (name, result) => async (...args) => { calls.push([name, ...args]); return typeof result === 'function' ? result(...args) : result; };
-  return {
-    store,
-    runtime: { id: 'test', getURL: (p) => `chrome-extension://test/${p}`, onConnect: event(), onMessage: event(), lastError: undefined },
-    storage: { local: {
-      get: async (k) => (k in store ? { [k]: structuredClone(store[k]) } : {}),
-      set: async (o) => Object.assign(store, structuredClone(o)),
-    } },
-    notifications: { create: rec('notifications.create', 'n1'), onClicked: event(), onClosed: event() },
-    browsingData: { remove: rec('browsingData.remove') },
-    history: { deleteUrl: rec('history.deleteUrl'), search: rec('history.search', []), onVisited: event() },
-    tabs: {
-      create: rec('tabs.create', { id: 7 }),
-      remove: rec('tabs.remove'),
-      query: rec('tabs.query', [
-        { id: 1, pinned: false, lastAccessed: Date.now() - 2 * 60e3 },     // used 2 min ago
-        { id: 2, pinned: false, lastAccessed: Date.now() - 3 * 3600e3 },   // used 3 h ago
-        { id: 3, pinned: true, lastAccessed: Date.now() },                 // pinned
-      ]),
-    },
-  };
+/*
+ * port_create(name) -> one end of a fake runtime port (peer is set by port_pair)
+ */
+function port_create(name) {
+    return { name: name, onMessage: event_create(), onDisconnect: event_create(), peer: null };
 }
 
-export function runInVm(code, globals) {
-  const ctx = vm.createContext({ console, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
-    URL, Promise, structuredClone, AbortController, ...globals });
-  ctx.globalThis = ctx;
-  vm.runInContext(code, ctx);
-  return ctx;
+/*
+ * port_pair(name) -> [client, server], two connected fake ports
+ */
+export function port_pair(name) {
+    const a = port_create(name);
+    const b = port_create(name);
+    a.postMessage = function (msg) {
+        queueMicrotask(function () {
+            b.onMessage.emit(structuredClone(msg));
+        });
+    };
+    b.postMessage = function (msg) {
+        queueMicrotask(function () {
+            a.onMessage.emit(structuredClone(msg));
+        });
+    };
+    return [a, b];
 }
 
-export const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
+/*
+ * recorder(calls, name, result) -> an async fake API function that logs its calls
+ */
+function recorder(calls, name, result) {
+    return async function () {
+        const args = Array.prototype.slice.call(arguments);
+        calls.push([name].concat(args));
+        return typeof result === 'function' ? result.apply(null, args) : result;
+    };
+}
+
+/*
+ * fake_chrome(calls) -> the parts of chrome.* the tests need; calls collects API calls
+ */
+export function fake_chrome(calls) {
+    const log = calls || [];
+    const store = {};
+    return {
+        store: store,
+        runtime: { id: 'test', getURL: function (p) { return `chrome-extension://test/${p}`; }, onConnect: event_create(), onMessage: event_create(), lastError: undefined },
+        storage: {
+            local: {
+                get: async function (key) {
+                    const out = {};
+                    if (key in store) {
+                        out[key] = structuredClone(store[key]);
+                    }
+                    return out;
+                },
+                set: async function (patch) {
+                    Object.assign(store, structuredClone(patch));
+                },
+            },
+        },
+        notifications: { create: recorder(log, 'notifications.create', 'n1'), onClicked: event_create(), onClosed: event_create() },
+        browsingData: { remove: recorder(log, 'browsingData.remove') },
+        history: { deleteUrl: recorder(log, 'history.deleteUrl'), search: recorder(log, 'history.search', []), onVisited: event_create() },
+        tabs: {
+            create: recorder(log, 'tabs.create', { id: 7 }),
+            remove: recorder(log, 'tabs.remove'),
+            query: recorder(log, 'tabs.query', []),
+        },
+    };
+}
+
+/*
+ * run_in_vm(code, globals) -> the VM context after running code (sloppy script, like a page)
+ */
+export function run_in_vm(code, globals) {
+    const ctx = vm.createContext(Object.assign({
+        console: console, setTimeout: setTimeout, clearTimeout: clearTimeout, setInterval: setInterval,
+        clearInterval: clearInterval, queueMicrotask: queueMicrotask, URL: URL, Promise: Promise,
+        structuredClone: structuredClone, AbortController: AbortController,
+    }, globals));
+    ctx.globalThis = ctx;
+    vm.runInContext(code, ctx);
+    return ctx;
+}
+
+/*
+ * tick(ms) -> Promise resolved after ms (default 10)
+ */
+export function tick(ms) {
+    return new Promise(function (resolve) {
+        setTimeout(resolve, ms === undefined ? 10 : ms);
+    });
+}
