@@ -1,0 +1,12 @@
+{
+  "name": "moss",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A modular userscript manager for Chromium (MV3).",
+  "type": "module",
+  "scripts": {
+    "check": "for f in $(find src tools tests -name '*.js' -o -name '*.mjs'); do node --check \"$f\" || exit 1; done",
+    "test": "node --test tests/",
+    "icons": "node tools/make-icons.mjs"
+  }
+}

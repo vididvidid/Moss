@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Moss Dashboard</title>
+  <link rel="icon" href="../../icons/icon48.png">
+  <link rel="stylesheet" href="../ui-tokens.css">
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><img src="../../icons/icon48.png" alt="" width="22" height="22"> Moss</div>
+    <nav class="views" role="tablist">
+      <button data-view="editor" class="active">Scripts</button>
+      <button data-view="settings">Settings</button>
+      <button data-view="docs">Docs</button>
+    </nav>
+    <span class="spacer"></span>
+    <button class="btn" id="new-script">+ Script</button>
+    <button class="btn" id="new-module">+ Module</button>
+    <button class="btn" id="import">Import…</button>
+    <input type="file" id="import-file" accept=".js,.user.js,text/javascript" hidden>
+  </header>
+
+  <div id="banner" class="banner" hidden>
+    <strong>User scripts are switched off.</strong>
+    Chrome only runs user scripts when you allow it: open Moss's extension details and turn on
+    <em>Allow User Scripts</em> (on Chrome before 138, turn on <em>Developer mode</em> instead).
+    <button class="btn" id="fix">Open extension details</button>
+  </div>
+
+  <main id="view-editor" class="view">
+    <aside class="tree" id="tree"></aside>
+    <section class="work" id="work">
+      <div class="empty-state" id="empty">
+        <h2>Pick a script or module</h2>
+        <p>…or start a new one. Scripts live on the left, grouped by their <code>@folder</code>.
+          Modules are shared code that any script can pull in with <code>// @use name as alias</code>.</p>
+      </div>
+      <div id="item" hidden>
+        <div class="toolbar">
+          <input id="item-name" class="name-input" spellcheck="false" aria-label="Name">
+          <span id="item-chip" class="chip"></span>
+          <label class="enabled" id="enabled-wrap"><input type="checkbox" class="switch" id="enabled"> Enabled</label>
+          <span class="spacer"></span>
+          <span id="dirty" class="dirty" hidden>Unsaved</span>
+          <button class="btn" id="override" hidden>Override built-in</button>
+          <button class="btn" id="update" hidden title="Fetch the latest version from where this script was imported">↻ Update</button>
+          <button class="btn danger" id="delete">Delete</button>
+          <button class="btn" id="export" title="Build a standalone extension from this script">Export as extension</button>
+          <button class="btn primary" id="save" title="Ctrl+S">Save</button>
+        </div>
+        <nav class="tabs" id="tabs">
+          <button data-tab="code" class="active">Code</button>
+          <button data-tab="options" data-for="script">Options</button>
+          <button data-tab="bundle">Bundle</button>
+          <button data-tab="values" data-for="script">Values</button>
+        </nav>
+        <div class="pane" data-pane="code">
+          <div class="editor">
+            <pre class="gutter" id="gutter" aria-hidden="true"></pre>
+            <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
+          </div>
+          <div class="problems" id="problems"></div>
+        </div>
+        <div class="pane scroll" data-pane="options" hidden><div id="options-source"></div><div id="options" class="form-grid"></div></div>
+        <div class="pane scroll" data-pane="bundle" hidden><div id="bundle"></div></div>
+        <div class="pane scroll" data-pane="values" hidden>
+          <p class="hint">Stored GM values for this script, as JSON. Edit and save, or clear them.</p>
+          <textarea id="values" class="json" spellcheck="false"></textarea>
+          <div class="row"><button class="btn primary" id="values-save">Save values</button>
+            <button class="btn danger" id="values-clear">Clear all</button></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <main id="view-settings" class="view scroll" hidden>
+    <div class="doc-page">
+      <h1>Settings</h1>
+      <p class="hint">Changes save as you make them. Scripts are rebuilt automatically.</p>
+      <div class="row"><button class="btn" id="check-all">↻ Check all imported scripts for updates now</button>
+        <span id="check-all-result" class="hint"></span></div>
+      <div id="settings"></div>
+      <h2>Backup</h2>
+      <p class="hint">Everything (scripts, modules, settings and stored values) as one JSON file.</p>
+      <div class="row">
+        <button class="btn" id="backup-export">Download backup</button>
+        <button class="btn" id="backup-import">Restore from backup…</button>
+        <input type="file" id="backup-file" accept=".json,application/json" hidden>
+        <button class="btn danger" id="settings-reset">Reset settings to defaults</button>
+      </div>
+    </div>
+  </main>
+
+  <main id="view-docs" class="view scroll" hidden>
+    <article class="doc-page docs">
+      <h1>Moss in five minutes</h1>
+
+      <h2>A script</h2>
+      <pre>// ==UserScript==
+// @name         Hide comments
+// @match        https://news.example.com/*
+// @use          moss/dom/wait as wait
+// @use          moss/ui/toast as toast
+// ==/UserScript==
+
+wait.observe('.comments', (el) => el.remove());
+toast('Comments hidden');</pre>
+      <p>Everything a script needs comes from the header. Moss works out which runtime features and modules to include,
+        and nothing else gets injected. The <b>Bundle</b> tab shows what was included and why.</p>
+
+      <h2>Three sandboxes: <code>@sandbox</code></h2>
+      <table>
+        <tr><th>isolated</th><td>The default. Runs in a private world on the page: it sees the DOM but not the page's JavaScript. All GM APIs are available, and <code>moss.chrome</code> if granted.</td></tr>
+        <tr><th>page</th><td>Runs as the page's own JavaScript (aliases: <code>none</code>, <code>raw</code>, or Tampermonkey's <code>@grant none</code>). Can patch <code>window.fetch</code> and read page globals. There's no extension bridge, so values go to localStorage and privileged APIs are unavailable.</td></tr>
+        <tr><th>extension</th><td>No page at all: a background script with browser APIs (aliases: <code>native</code>, <code>background</code>). Use it for tools such as clearing history, managing tabs or bookmarks. Add <code>// @grant chrome.history</code> (or any namespace) and call <code>await moss.chrome.history.search({ text: '' })</code> or <code>moss.chrome.history.onVisited.addListener(fn)</code>.</td></tr>
+      </table>
+
+      <h2>Header keys</h2>
+      <table>
+        <tr><th>@match / @exclude-match</th><td>Chrome match patterns: <code>https://*.site.com/*</code></td></tr>
+        <tr><th>@include / @exclude</th><td>Globs (<code>*</code>) or <code>/regex/</code></td></tr>
+        <tr><th>@run-at</th><td>document-start · document-end · document-idle</td></tr>
+        <tr><th>@noframes</th><td>Top frame only</td></tr>
+        <tr><th>@use path [as name]</th><td>Bundle a module; <code>as name</code> makes it a variable</td></tr>
+        <tr><th>@require url</th><td>Remote library, downloaded once and cached</td></tr>
+        <tr><th>@grant</th><td><code>GM_xmlhttpRequest</code>, <code>GM_download</code>, <code>chrome.&lt;namespace&gt;</code></td></tr>
+        <tr><th>@connect host</th><td>Hosts GM_xmlhttpRequest may reach (export → host permissions)</td></tr>
+        <tr><th>@folder a/b</th><td>Where the script sits in the sidebar</td></tr>
+        <tr><th>@inject raw</th><td>No wrapper: your code exactly as written</td></tr>
+      </table>
+
+      <h2>APIs</h2>
+      <p><code>GM_getValue/setValue/deleteValue/listValues</code> · <code>GM_addStyle</code> · <code>GM_addElement</code> ·
+        <code>GM_xmlhttpRequest</code> · <code>GM_notification</code> · <code>GM_registerMenuCommand</code> (shown in the toolbar popup) ·
+        <code>GM_openInTab</code> · <code>GM_setClipboard</code> · <code>GM_download</code> · <code>GM_info</code> · <code>GM.*</code> promise versions ·
+        <code>moss.chrome</code> · <code>require()</code>. Top-level <code>await</code> works.</p>
+
+      <h2>Modules</h2>
+      <p>Built-in: <code>moss/ui</code> (or its parts <code>moss/ui/toast</code>, <code>panel</code>, <code>modal</code>, <code>fab</code>,
+        <code>form</code>, <code>settings</code>, <code>button</code>, <code>core</code>) and <code>moss/dom</code>
+        (<code>query</code>, <code>wait</code>, <code>url</code>, <code>util</code>). Your own modules use folder paths such as
+        <code>utils/text</code> and CommonJS style (<code>exports.x = …</code>). They receive <code>api</code>, the calling
+        script's GM functions. Writing <code>api['GM_getValue']</code> in quotes means "use it only if the script already has it",
+        so the feature isn't pulled into the bundle. To change a built-in, open it and click <b>Override built-in</b>.</p>
+
+      <h2>Import &amp; updates</h2>
+      <p><b>Import…</b> takes a GitHub file, folder or repository link (pick which scripts to bring in), a gist, or any URL.
+        An imported script keeps its source. Click <b>↻ Update</b> to pull the latest version, or turn on auto-update in its
+        <b>Options</b> tab and choose how often Moss checks. If you edited a script in Moss, auto-update leaves it alone unless
+        you allow overwriting in Settings. For private repos, add a GitHub token in Settings.</p>
+
+      <h2>Export</h2>
+      <p><b>Export as extension</b> builds a Manifest V3 extension from one script and downloads it as a zip. It contains only the
+        runtime pieces, background code, permissions and popup the script actually uses. You can review and edit every one
+        of them before downloading.</p>
+    </article>
+  </main>
+
+  <dialog id="export-dialog">
+    <form method="dialog" class="export">
+      <h2>Export as extension</h2>
+      <div class="export-grid">
+        <div class="col">
+          <label>Name <input id="ex-name"></label>
+          <label>Version <input id="ex-version"></label>
+          <label>Description <textarea id="ex-description" rows="2"></textarea></label>
+          <h3>Features</h3>
+          <div id="ex-features"></div>
+          <h3>Extras</h3>
+          <label class="check"><input type="checkbox" id="ex-source"> Include the original .user.js and module sources</label>
+          <label class="check"><input type="checkbox" id="ex-readme"> Include a README</label>
+        </div>
+        <div class="col">
+          <h3>Permissions</h3>
+          <ul id="ex-permissions" class="reasons"></ul>
+          <h3>Files <span id="ex-size" class="hint"></span></h3>
+          <ul id="ex-files" class="reasons"></ul>
+          <div id="ex-manifest-wrap">
+            <h3>manifest.json</h3>
+            <textarea id="ex-manifest" class="json" rows="10" spellcheck="false"></textarea>
+          </div>
+        </div>
+      </div>
+      <p id="ex-error" class="error"></p>
+      <div class="row end">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" id="ex-download" value="download">Download .zip</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="import-dialog">
+    <form method="dialog" class="export import">
+      <h2>Import scripts</h2>
+      <p class="hint">Paste a link to a GitHub file, folder or repository, a gist, or any <code>.user.js</code> URL.
+        Moss remembers where each script came from, so it can update it later.</p>
+      <div class="row nowrap">
+        <input id="im-url" placeholder="https://github.com/you/repo  ·  …/blob/main/script.js  ·  gist link" spellcheck="false" autocomplete="off">
+        <button class="btn primary" id="im-lookup" value="lookup">Look up</button>
+      </div>
+      <div id="im-results"></div>
+      <div class="row" id="im-update-row" hidden>
+        <label class="check"><input type="checkbox" id="im-auto"> Keep updated automatically</label>
+        <select id="im-every"></select>
+      </div>
+      <p id="im-error" class="error"></p>
+      <div class="row end">
+        <button class="btn ghost" id="im-file" value="file">From a file on this computer…</button>
+        <span class="spacer"></span>
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" id="im-go" value="import" disabled>Import</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Moss</title>
+  <link rel="stylesheet" href="../ui-tokens.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="../../icons/icon48.png" alt="" width="20" height="20">
+    <strong>Moss</strong>
+    <span class="spacer"></span>
+    <button class="btn ghost" id="open-dashboard" title="Open the dashboard">Dashboard</button>
+  </header>
+  <div id="banner" class="banner" hidden>
+    User scripts are switched off for Moss.
+    <button class="btn" id="fix">Turn on "Allow User Scripts"</button>
+  </div>
+  <section>
+    <h2>On this page</h2>
+    <ul id="page-scripts"></ul>
+  </section>
+  <section id="commands-section" hidden>
+    <h2>Commands</h2>
+    <ul id="commands"></ul>
+  </section>
+  <section id="bg-section" hidden>
+    <h2>Background scripts</h2>
+    <ul id="bg-scripts"></ul>
+  </section>
+  <footer>
+    <button class="btn" id="new-here">+ New script for this site</button>
+  </footer>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

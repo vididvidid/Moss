@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "Moss",
+  "version": "0.1.0",
+  "description": "A modular userscript manager: sandboxed, page and extension-mode scripts, shared UI modules, and one-click export to a standalone extension.",
+  "minimum_chrome_version": "120",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "options_page": "src/dashboard/index.html",
+  "permissions": [
+    "userScripts",
+    "storage",
+    "unlimitedStorage",
+    "offscreen",
+    "alarms",
+    "notifications"
+  ],
+  "optional_permissions": [
+    "history",
+    "browsingData",
+    "bookmarks",
+    "downloads",
+    "cookies",
+    "topSites",
+    "sessions",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "sandbox": {
+    "pages": [
+      "src/runner/sandbox.html"
+    ]
+  },
+  "content_security_policy": {
+    "sandbox": "sandbox allow-scripts allow-forms allow-popups allow-modals; script-src 'self' 'unsafe-inline' 'unsafe-eval'; child-src 'self';"
+  }
+}

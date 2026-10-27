@@ -1,0 +1,16 @@
+body { width: 320px; }
+header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+header .spacer { flex: 1; }
+h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 12px 12px 4px; }
+ul { list-style: none; margin: 0; padding: 0 4px; }
+li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
+li:hover { background: var(--hover); }
+li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+li.command { cursor: pointer; }
+li.command .from { color: var(--muted); font-size: 11px; }
+.empty { color: var(--muted); padding: 4px 12px 8px; }
+.error { color: var(--danger); font-size: 11px; }
+.banner { margin: 10px 12px 0; padding: 8px 10px; border-radius: var(--radius); background: #fdf0d8; color: #6b4600; display: grid; gap: 6px; }
+footer { padding: 10px 12px 12px; border-top: 1px solid var(--border); margin-top: 10px; }
+footer .btn { width: 100%; }
+.error-line { margin: -2px 8px 6px 46px; color: var(--danger); font-size: 11px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
