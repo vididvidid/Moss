@@ -37,7 +37,7 @@ toast('Comments hidden');
 | sandbox (`@sandbox`) | runs in | can do |
 |---|---|---|
 | `isolated` (default) | a private world on the page | DOM, all GM APIs, `moss.chrome` if granted |
-| `page` (`none`, `raw`, or `@grant none`) | the page's own JS world | patch `window.fetch`, read page globals; values go to localStorage; no privileged APIs |
+| `page` (`none`, `raw`, `JavaScript`, or `@grant none`) | the page's own JS world | patch `window.fetch`, read page globals through `unsafeWindow`, **and** use every GM API (through a relay in the sandbox, over a secret per-script channel) |
 | `extension` (`native`, `background`) | background, no page | `@grant chrome.history` → `await moss.chrome.history.search({ text: '' })`, `moss.chrome.history.onVisited.addListener(fn)` |
 
 Other header keys:
@@ -48,13 +48,17 @@ Other header keys:
 - `@strict` (run the script in strict mode — recommended)
 
 APIs:
-- `GM_getValue`/`setValue`/`deleteValue`/`listValues`
+- `GM_getValue`/`setValue`/`deleteValue`/`listValues`, `GM_addValueChangeListener`/`GM_removeValueChangeListener` (also fires for changes made in another tab)
 - `GM_addStyle`, `GM_addElement`
 - `GM_xmlhttpRequest`, `GM_notification`, `GM_download`
 - `GM_registerMenuCommand` (commands show in the toolbar popup)
-- `GM_openInTab`, `GM_setClipboard`, `GM_info`
+- `GM_openInTab` (`active`, `insert`, `setParent`; the handle's `closed`/`onclose` follow the real tab), `GM_setClipboard`, `GM_info`
 - `GM.*` promise versions, `moss.chrome`, `require()`
 - Top-level `await` works.
+
+**Tampermonkey compatibility details**
+- **Early start:** a `@run-at document-start` script that uses GM values carries a snapshot of them and starts right away, before the page's own scripts. The live values replace the snapshot a moment later.
+- **`GM_xmlhttpRequest`:** supports `onloadstart`, `onreadystatechange`, `onprogress`, `onload`, `onerror`, `ontimeout`, `onabort` and `onloadend`, with `responseType` `json`, `document`, `arraybuffer` or `blob`.
 
 ## Import from GitHub and keep scripts updated
 
@@ -69,6 +73,7 @@ Each imported script remembers its source:
 - **Auto-update** (Options → Source) checks every 15 minutes up to every week. Defaults are set in Settings → Updates, along with a **Check all now** button.
 - **Your edits are safe.** If you edit a script in Moss, auto-update won't overwrite your edits unless you allow it in Settings, and **↻ Update** asks before replacing them. Optionally, auto-update only when `@version` goes up.
 - **Private repos** need a GitHub token in Settings → GitHub. The token is only sent to GitHub hosts.
+- **Live reload from a local file:** go to Options → Source → **Link a local file…** and pick the file. While a Moss page is open, the script reloads every time you save the file. Extensions can't read `@require file://` URLs, so this is Moss's way to develop against a local copy.
 
 ## How it fits together
 
@@ -127,6 +132,6 @@ npm run icons    # regenerate icons/
 
 ## Limits (v0.2)
 - Chromium only. Firefox has no offscreen documents, so `extension` mode would need a different runner.
-- `@resource`, `GM_getResourceText` and `GM_addValueChangeListener` are not implemented yet. Updates follow the URL you imported from, not `@updateURL`.
+- `@resource` and `GM_getResourceText` are not implemented yet. Updates follow the URL you imported from, not `@updateURL`.
 - `unsafeWindow` in `isolated` mode is the sandbox's own `window`. Use `@sandbox page` for page globals.
 - In an exported *background* script, start-up is synchronous, so that `chrome.*` listeners register on the service worker's first turn. Read values with `await GM.getValue(...)` there.

@@ -20,7 +20,7 @@ import './shared/host/menu.js';
 import './shared/host/tabs.js';
 import './shared/host/download.js';
 import './shared/host/chrome.js';
-import { build, plan } from './lib/bundler.js';
+import { build, build_relay, plan } from './lib/bundler.js';
 import { parse_meta } from './lib/meta.js';
 import { migrate_state, upgrade_examples, SCHEMA_VERSION } from './lib/migrate.js';
 import { missing_permissions } from './lib/permissions.js';
@@ -144,9 +144,41 @@ function record_error(script, message) {
     }).catch(function () {});
 }
 
+const snapshot_timers = {};
+
+/*
+ * refresh_snapshot(script_id) — a document_start script carries a snapshot of its values;
+ * re-register just that script a moment after they change, so the next page load starts
+ * with current values
+ */
+function refresh_snapshot(script_id) {
+    clearTimeout(snapshot_timers[script_id]);
+    snapshot_timers[script_id] = setTimeout(async function () {
+        delete snapshot_timers[script_id];
+        try {
+            const st = await get_state();
+            const s = st.scripts[script_id];
+            if (!s || !s.enabled) {
+                return;
+            }
+            const sources = sources_create(st.modules);
+            const p = await plan(s, { sources: sources, settings: st.settings, target: 'moss' });
+            if (!p.early || p.errors.length > 0) {
+                return;
+            }
+            const values = (await chrome.storage.local.get(`values:${s.id}`))[`values:${s.id}`];
+            const code = await build(p, { sources: sources, script: s, token: st.tokens[s.id], settings: st.settings, values: values });
+            await chrome.userScripts.update([{ id: s.id, js: [{ code: code }] }]);
+        } catch (e) {
+            console.error('Moss: could not refresh the values snapshot', e);
+        }
+    }, 1000);
+}
+
 const host = moss_host({
     icon: chrome.runtime.getURL('icons/icon128.png'),
     on_error: record_error,
+    on_values_change: refresh_snapshot,
     get_script: get_script,
 });
 
@@ -190,17 +222,18 @@ async function user_scripts_available() {
 }
 
 /*
- * registration(s, p, code) -> the chrome.userScripts registration of a page script
+ * registration(id, p, code, world, run_at) -> a chrome.userScripts registration on the
+ * script's targets
  */
-function registration(s, p, code) {
+function registration(id, p, code, world, run_at) {
     const t = p.targets;
     const reg = {
-        id: s.id,
+        id: id,
         js: [{ code: code }],
         matches: t.matches,
-        runAt: t.run_at,
+        runAt: run_at,
         allFrames: t.all_frames,
-        world: (p.mode === 'page' || p.inject === 'raw') ? 'MAIN' : 'USER_SCRIPT',
+        world: world,
     };
     if (t.exclude_matches.length > 0) {
         reg.excludeMatches = t.exclude_matches;
@@ -231,12 +264,19 @@ async function build_all() {
             if (p.errors.length > 0) {
                 throw new Error(p.errors.join('\n'));
             }
-            const code = await build(p, { sources: sources, script: s, token: st.tokens[s.id], settings: st.settings });
+            const values = p.early ? (await chrome.storage.local.get(`values:${s.id}`))[`values:${s.id}`] : null;
+            const code = await build(p, { sources: sources, script: s, token: st.tokens[s.id], settings: st.settings, values: values });
             if (p.mode === 'extension') {
                 out.background.push({ id: s.id, code: code });
-            } else {
-                out.page_scripts.push(registration(s, p, code));
+                continue;
             }
+            const world = (p.mode === 'page' || p.inject === 'raw') ? 'MAIN' : 'USER_SCRIPT';
+            if (p.transport === 'relay') {
+                // The relay goes first, so it is usually listening before the script starts.
+                const relay = await build_relay(p, { sources: sources, script: s, token: st.tokens[s.id] });
+                out.page_scripts.push(registration(`${s.id}__relay`, p, relay, 'USER_SCRIPT', 'document_start'));
+            }
+            out.page_scripts.push(registration(s.id, p, code, world, p.inject_at));
         } catch (e) {
             out.errors[s.id] = e.message;
         }
@@ -301,7 +341,7 @@ async function sync() {
             try {
                 await chrome.userScripts.register([reg]);
             } catch (e) {
-                built.errors[reg.id] = `Could not register: ${e.message}`;
+                built.errors[reg.id.replace(/__relay$/, '')] = `Could not register: ${e.message}`;
             }
         }
     }
@@ -389,8 +429,8 @@ function run_updates(opts) {
         const summary = { checked: 0, updated: [], errors: [] };
         for (const id of Object.keys(st.scripts)) {
             const s = st.scripts[id];
-            if (!s.source || !s.source.url) {
-                continue;
+            if (!s.source || !s.source.url || s.source.kind === 'local') {
+                continue; // local files are watched by the dashboard
             }
             const every = (s.source.every || st.settings['update.every']) * 60e3;
             const last = updates[id] ? updates[id].checked_at : 0;

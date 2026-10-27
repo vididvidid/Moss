@@ -36,14 +36,33 @@ moss_host_features.values = function (host) {
         const got = await area.get(key_of(script));
         return got[key_of(script)] || {};
     };
-    host.handlers['values.set'] = function (conn, script, args) {
-        return update(script, function (values) {
+    /*
+     * broadcast(from, msg) — tell the script's other open tabs about a change
+     */
+    function broadcast(from, msg) {
+        for (const conn of host.conns.values()) {
+            if (conn !== from && conn.script_id === from.script_id) {
+                conn.send(msg);
+            }
+        }
+    }
+
+    host.handlers['values.set'] = async function (conn, script, args) {
+        await update(script, function (values) {
             values[args[0]] = args[1];
         });
+        broadcast(conn, { push: 'value', key: args[0], value: args[1], deleted: false });
+        if (host.opts.on_values_change) {
+            host.opts.on_values_change(script.id);
+        }
     };
-    host.handlers['values.delete'] = function (conn, script, args) {
-        return update(script, function (values) {
+    host.handlers['values.delete'] = async function (conn, script, args) {
+        await update(script, function (values) {
             delete values[args[0]];
         });
+        broadcast(conn, { push: 'value', key: args[0], value: null, deleted: true });
+        if (host.opts.on_values_change) {
+            host.opts.on_values_change(script.id);
+        }
     };
 };

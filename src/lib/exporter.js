@@ -7,7 +7,7 @@
  * struct export_file { path: string; content: string | Uint8Array; reason: string; }
  * struct export_result { plan: struct plan; manifest: object; files: struct export_file[]; }
  */
-import { build, plan, slugify, MOSS_VERSION } from './bundler.js';
+import { build, build_relay, plan, slugify, MOSS_VERSION } from './bundler.js';
 import { HOST_CORE, host_feature } from '../shared/features.js';
 import { host_policy } from './settings.js';
 
@@ -84,7 +84,9 @@ export async function export_extension(script, args) {
         files.push({ path: path, content: content, reason: reason });
     }
 
-    const code = await build(p, { sources: sources, script: scoped, settings: settings });
+    // A page-mode script with a bridge talks to its relay through a secret channel name.
+    const channel = p.transport === 'relay' ? crypto.randomUUID() : '';
+    const code = await build(p, { sources: sources, script: scoped, token: channel, settings: settings });
     const needs_background = p.mode === 'extension' || p.host_features.length > 0;
 
     const icons = {};
@@ -111,23 +113,13 @@ export async function export_extension(script, args) {
 
     if (p.mode !== 'extension') {
         const t = p.targets;
-        const content_script = {
-            matches: t.matches,
-            js: ['content.js'],
-            run_at: t.run_at,
-            all_frames: t.all_frames,
-            world: (p.mode === 'page' || p.inject === 'raw') ? 'MAIN' : 'ISOLATED',
-        };
-        if (t.exclude_matches.length > 0) {
-            content_script.exclude_matches = t.exclude_matches;
+        const world = (p.mode === 'page' || p.inject === 'raw') ? 'MAIN' : 'ISOLATED';
+        manifest.content_scripts = [];
+        if (p.transport === 'relay') {
+            manifest.content_scripts.push(content_script_entry(t, 'relay.js', 'document_start', 'ISOLATED'));
+            add('relay.js', await build_relay(p, { sources: sources, script: scoped, token: channel }), 'bridge between the page-mode script and the extension');
         }
-        if (t.include_globs.length > 0) {
-            content_script.include_globs = t.include_globs;
-        }
-        if (t.exclude_globs.length > 0) {
-            content_script.exclude_globs = t.exclude_globs;
-        }
-        manifest.content_scripts = [content_script];
+        manifest.content_scripts.push(content_script_entry(t, 'content.js', p.inject_at, world));
         const used = names_of(p.features);
         add('content.js', code, `the script (${p.mode} world${used.length > 0 ? ' + ' + used.join(', ') : ''})`);
     }
@@ -162,6 +154,23 @@ export async function export_extension(script, args) {
     }
     files.unshift({ path: 'manifest.json', content: JSON.stringify(manifest, null, 2) + '\n', reason: 'extension manifest' });
     return { plan: p, manifest: manifest, files: files };
+}
+
+/*
+ * content_script_entry(t, file, run_at, world) -> one manifest content_scripts entry on targets t
+ */
+function content_script_entry(t, file, run_at, world) {
+    const entry = { matches: t.matches, js: [file], run_at: run_at, all_frames: t.all_frames, world: world };
+    if (t.exclude_matches.length > 0) {
+        entry.exclude_matches = t.exclude_matches;
+    }
+    if (t.include_globs.length > 0) {
+        entry.include_globs = t.include_globs;
+    }
+    if (t.exclude_globs.length > 0) {
+        entry.exclude_globs = t.exclude_globs;
+    }
+    return entry;
 }
 
 /*

@@ -1,7 +1,11 @@
 /*
  * Feature: xhr — GM_xmlhttpRequest, performed by the extension so it isn't bound by
  * the page's CORS rules. Request bodies: string, URLSearchParams or JSON-able object.
- * The callbacks and response fields follow the Tampermonkey API.
+ * The callbacks and response fields follow the Tampermonkey API: onloadstart,
+ * onreadystatechange, onprogress, onload, onerror, ontimeout, onabort, onloadend;
+ * responseType '' / 'text' / 'json' / 'document' / 'arraybuffer' / 'blob'.
+ * The whole response arrives at once, so onreadystatechange sees readyState 4 and
+ * onprogress fires once, both just before onload.
  */
 (function () {
     'use strict';
@@ -50,6 +54,11 @@
             } catch (e) {
                 res.response = null;
             }
+        } else if (details.responseType === 'document' && typeof DOMParser !== 'undefined') {
+            const type = /content-type:\s*([^;\r\n]+)/i.exec(r.response_headers || '');
+            const mime = type !== null && /xml/.test(type[1]) ? 'application/xml' : 'text/html';
+            res.response = new DOMParser().parseFromString(r.response_text, mime);
+            res.responseXML = res.response;
         }
         return res;
     }
@@ -75,6 +84,13 @@
         function on_done(r) {
             const res = to_response(r, details);
             if (!aborted) {
+                if (details.onreadystatechange) {
+                    details.onreadystatechange(res);
+                }
+                if (details.onprogress) {
+                    const size = r.size || 0;
+                    details.onprogress(Object.assign({}, res, { lengthComputable: true, loaded: size, total: size }));
+                }
                 if (details.onload) {
                     details.onload(res);
                 }
@@ -103,6 +119,9 @@
             throw error;
         }
 
+        if (details.onloadstart) {
+            details.onloadstart({ readyState: 1, status: 0, finalUrl: req.url, context: details.context });
+        }
         const promise = rt.call('xhr', [req]).then(on_done, on_fail);
         return {
             promise: promise,
