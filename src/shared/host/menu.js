@@ -1,23 +1,45 @@
-/* Host feature: menu — collects menu commands per connection for the toolbar popup. */
-MossHostFeatures.menu = function (H) {
-  H.handlers['menu.register'] = function (c, s, a) { c.menu.set(a[0], a[1]); return true; };
-  H.handlers['menu.unregister'] = function (c, s, a) { c.menu.delete(a[0]); return true; };
+/*
+ * Host feature: menu — collects menu commands per connection for the toolbar popup.
+ */
+moss_host_features.menu = function (host) {
+    'use strict';
 
-  // Commands for a tab, plus those of background scripts (tabId null).
-  H.listMenus = function (tabId) {
-    var out = [];
-    H.conns.forEach(function (c) {
-      if (c.tabId !== tabId && c.tabId != null) return;
-      c.menu.forEach(function (caption, id) {
-        out.push({ conn: c.key, id: id, caption: caption, scriptId: c.scriptId, background: c.tabId == null });
-      });
-    });
-    return out;
-  };
-  H.runMenu = function (connKey, id) {
-    var c = H.conns.get(connKey);
-    if (!c || !c.menu.has(id)) return false;
-    c.send({ push: 'menu', id: id });
-    return true;
-  };
+    host.handlers['menu.register'] = function (conn, script, args) {
+        conn.menu.set(args[0], args[1]);
+        return true;
+    };
+    host.handlers['menu.unregister'] = function (conn, script, args) {
+        conn.menu.delete(args[0]);
+        return true;
+    };
+
+    /*
+     * list_menus(tab_id) -> [{ conn, id, caption, script_id, background }] for a tab,
+     * plus those of background scripts (tab_id null)
+     */
+    host.list_menus = function (tab_id) {
+        const out = [];
+        for (const conn of host.conns.values()) {
+            const background = conn.tab_id === null || conn.tab_id === undefined;
+            if (conn.tab_id !== tab_id && !background) {
+                continue;
+            }
+            for (const [id, caption] of conn.menu) {
+                out.push({ conn: conn.key, id: id, caption: caption, script_id: conn.script_id, background: background });
+            }
+        }
+        return out;
+    };
+
+    /*
+     * run_menu(conn_key, id) -> true if the command was sent to its script
+     */
+    host.run_menu = function (conn_key, id) {
+        const conn = host.conns.get(conn_key);
+        if (conn === undefined || !conn.menu.has(id)) {
+            return false;
+        }
+        conn.send({ push: 'menu', id: id });
+        return true;
+    };
 };

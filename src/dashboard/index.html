@@ -103,10 +103,18 @@
 // @name         Hide comments
 // @match        https://news.example.com/*
 // @use          moss/dom/wait as wait
+// @strict
 // @use          moss/ui/toast as toast
 // ==/UserScript==
 
-wait.observe('.comments', (el) => el.remove());
+/*
+ * hide(el) — remove one comment section
+ */
+function hide(el) {
+    el.remove();
+}
+
+wait.observe('.comments', hide);
 toast('Comments hidden');</pre>
       <p>Everything a script needs comes from the header. Moss works out which runtime features and modules to include,
         and nothing else gets injected. The <b>Bundle</b> tab shows what was included and why.</p>
@@ -130,6 +138,7 @@ toast('Comments hidden');</pre>
         <tr><th>@connect host</th><td>Hosts GM_xmlhttpRequest may reach (export → host permissions)</td></tr>
         <tr><th>@folder a/b</th><td>Where the script sits in the sidebar</td></tr>
         <tr><th>@inject raw</th><td>No wrapper: your code exactly as written</td></tr>
+        <tr><th>@strict</th><td>Run the script in strict mode (recommended): silent mistakes, like assigning to a misspelled variable, become errors</td></tr>
       </table>
 
       <h2>APIs</h2>
@@ -145,6 +154,11 @@ toast('Comments hidden');</pre>
         <code>utils/text</code> and CommonJS style (<code>exports.x = …</code>). They receive <code>api</code>, the calling
         script's GM functions. Writing <code>api['GM_getValue']</code> in quotes means "use it only if the script already has it",
         so the feature isn't pulled into the bundle. To change a built-in, open it and click <b>Override built-in</b>.</p>
+
+      <h2>Strict mode</h2>
+      <p>New scripts start with <code>// @strict</code> in the header, which runs them in JavaScript's strict mode. You can
+        also turn it on per script (Options tab) or for everything (Settings → Runtime). Moss's own code always runs strict,
+        but it never forces strict mode on scripts that don't ask for it.</p>
 
       <h2>Import &amp; updates</h2>
       <p><b>Import…</b> takes a GitHub file, folder or repository link (pick which scripts to bring in), a gist, or any URL.

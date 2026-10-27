@@ -1,52 +1,127 @@
-/* Feature: values — GM_getValue & friends. Values are preloaded before the script
-   starts so the synchronous API works. Without an extension bridge (page mode) they
-   live in the page's localStorage under "moss:<script id>:". */
+/*
+ * Feature: values — GM_getValue & friends. Values are preloaded before the script
+ * starts so the synchronous API works. Without an extension bridge (page mode) they
+ * live in the page's localStorage under "moss:<script id>:".
+ */
 (function () {
-  var api = M.api, GM = M.GM, values = {};
-  var bridged = !!M.transport && M.ctx.valuesBackend !== 'local';
-  var prefix = 'moss:' + M.ctx.id + ':';
-  function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
+    'use strict';
+    const api = rt.api;
+    const gm = rt.gm;
+    const bridged = rt.transport !== null && rt.ctx.values_backend !== 'local';
+    const prefix = 'moss:' + rt.ctx.id + ':';
+    let values = {};
 
-  var loaded;
-  if (bridged) {
-    loaded = M.call('values.load').then(function (v) { values = v || {}; });
-  } else {
-    try {
-      for (var i = 0; i < localStorage.length; i++) {
-        var k = localStorage.key(i);
-        if (k.indexOf(prefix) === 0) values[k.slice(prefix.length)] = JSON.parse(localStorage.getItem(k));
-      }
-    } catch (e) { /* no localStorage here */ }
-    loaded = Promise.resolve();
-  }
-  M.waits.push(loaded);
-
-  function persist(key, value) {
-    if (bridged) {
-      return M.call(value === undefined ? 'values.delete' : 'values.set', value === undefined ? [key] : [key, value]);
+    /*
+     * clone(value) -> a deep copy (values are JSON, like Tampermonkey's)
+     */
+    function clone(value) {
+        if (value === undefined) {
+            return undefined;
+        }
+        return JSON.parse(JSON.stringify(value));
     }
-    try {
-      if (value === undefined) localStorage.removeItem(prefix + key);
-      else localStorage.setItem(prefix + key, JSON.stringify(value));
-    } catch (e) { return Promise.reject(e); }
-    return Promise.resolve();
-  }
 
-  api.GM_getValue = function (key, def) {
-    return Object.prototype.hasOwnProperty.call(values, key) ? clone(values[key]) : def;
-  };
-  api.GM_setValue = function (key, value) {
-    values[key] = clone(value);
-    persist(key, values[key]).catch(M.report);
-  };
-  api.GM_deleteValue = function (key) {
-    delete values[key];
-    persist(key, undefined).catch(M.report);
-  };
-  api.GM_listValues = function () { return Object.keys(values); };
+    /*
+     * load_local() — read this script's values from localStorage
+     */
+    function load_local() {
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key.indexOf(prefix) === 0) {
+                    values[key.slice(prefix.length)] = JSON.parse(localStorage.getItem(key));
+                }
+            }
+        } catch (e) {
+            // no localStorage here
+        }
+    }
 
-  GM.getValue = function (key, def) { return loaded.then(function () { return api.GM_getValue(key, def); }); };
-  GM.setValue = function (key, value) { values[key] = clone(value); return persist(key, values[key]); };
-  GM.deleteValue = function (key) { delete values[key]; return persist(key, undefined); };
-  GM.listValues = function () { return loaded.then(api.GM_listValues); };
+    let loaded;
+    if (bridged) {
+        loaded = rt.call('values.load').then(function (stored) {
+            values = stored || {};
+        });
+    } else {
+        load_local();
+        loaded = Promise.resolve();
+    }
+    rt.waits.push(loaded);
+
+    /*
+     * persist(key, value) -> Promise; value undefined deletes the key
+     */
+    function persist(key, value) {
+        if (bridged) {
+            if (value === undefined) {
+                return rt.call('values.delete', [key]);
+            }
+            return rt.call('values.set', [key, value]);
+        }
+        try {
+            if (value === undefined) {
+                localStorage.removeItem(prefix + key);
+            } else {
+                localStorage.setItem(prefix + key, JSON.stringify(value));
+            }
+        } catch (e) {
+            return Promise.reject(e);
+        }
+        return Promise.resolve();
+    }
+
+    /*
+     * get_value(key, fallback) -> the stored value, or fallback
+     */
+    function get_value(key, fallback) {
+        if (Object.prototype.hasOwnProperty.call(values, key)) {
+            return clone(values[key]);
+        }
+        return fallback;
+    }
+
+    /*
+     * set_value(key, value) — store a value (written through in the background)
+     */
+    function set_value(key, value) {
+        values[key] = clone(value);
+        persist(key, values[key]).catch(rt.report);
+    }
+
+    /*
+     * delete_value(key) — forget a value
+     */
+    function delete_value(key) {
+        delete values[key];
+        persist(key, undefined).catch(rt.report);
+    }
+
+    /*
+     * list_values() -> every stored key
+     */
+    function list_values() {
+        return Object.keys(values);
+    }
+
+    api.GM_getValue = get_value;
+    api.GM_setValue = set_value;
+    api.GM_deleteValue = delete_value;
+    api.GM_listValues = list_values;
+
+    gm.getValue = function (key, fallback) {
+        return loaded.then(function () {
+            return get_value(key, fallback);
+        });
+    };
+    gm.setValue = function (key, value) {
+        values[key] = clone(value);
+        return persist(key, values[key]);
+    };
+    gm.deleteValue = function (key) {
+        delete values[key];
+        return persist(key, undefined);
+    };
+    gm.listValues = function () {
+        return loaded.then(list_values);
+    };
 })();

@@ -1,25 +1,49 @@
-/* Host feature: values — per-script storage in chrome.storage.local ("values:<id>"). */
-MossHostFeatures.values = function (H) {
-  var area = chrome.storage.local, queues = {};
-  function key(s) { return 'values:' + s.id; }
-  // Writes are serialised per script so rapid GM_setValue calls never race.
-  function update(s, change) {
-    var k = key(s);
-    var next = (queues[k] || Promise.resolve()).then(function () {
-      return area.get(k).then(function (o) {
-        var v = o[k] || {};
-        change(v);
-        var patch = {};
-        patch[k] = v;
-        return area.set(patch);
-      });
-    });
-    queues[k] = next.catch(function () {});
-    return next;
-  }
-  H.handlers['values.load'] = function (c, s) {
-    return area.get(key(s)).then(function (o) { return o[key(s)] || {}; });
-  };
-  H.handlers['values.set'] = function (c, s, a) { return update(s, function (v) { v[a[0]] = a[1]; }); };
-  H.handlers['values.delete'] = function (c, s, a) { return update(s, function (v) { delete v[a[0]]; }); };
+/*
+ * Host feature: values — per-script storage in chrome.storage.local ("values:<id>").
+ */
+moss_host_features.values = function (host) {
+    'use strict';
+    const area = chrome.storage.local;
+    const queues = {};
+
+    /*
+     * key_of(script) -> storage key of the script's values
+     */
+    function key_of(script) {
+        return 'values:' + script.id;
+    }
+
+    /*
+     * update(script, change) -> Promise; change(values) edits the stored object.
+     * Writes are serialised per script so rapid GM_setValue calls never race.
+     */
+    function update(script, change) {
+        const key = key_of(script);
+        const before = queues[key] || Promise.resolve();
+        const next = before.then(async function () {
+            const got = await area.get(key);
+            const values = got[key] || {};
+            change(values);
+            const patch = {};
+            patch[key] = values;
+            await area.set(patch);
+        });
+        queues[key] = next.catch(function () {});
+        return next;
+    }
+
+    host.handlers['values.load'] = async function (conn, script) {
+        const got = await area.get(key_of(script));
+        return got[key_of(script)] || {};
+    };
+    host.handlers['values.set'] = function (conn, script, args) {
+        return update(script, function (values) {
+            values[args[0]] = args[1];
+        });
+    };
+    host.handlers['values.delete'] = function (conn, script, args) {
+        return update(script, function (values) {
+            delete values[args[0]];
+        });
+    };
 };

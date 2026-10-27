@@ -1,71 +1,163 @@
-import { parseMeta, urlMatches } from '../lib/meta.js';
-import { loadScripts, patchScript } from '../lib/store.js';
-import { requestPermissionsFor } from '../lib/permissions.js';
+'use strict';
+/*
+ * Toolbar popup: scripts on this tab, background scripts, menu commands and errors.
+ */
+import { parse_meta, url_matches } from '../lib/meta.js';
+import { request_permissions_for } from '../lib/permissions.js';
+import { load_scripts, patch_script } from '../lib/store.js';
 
-const $ = (id) => document.getElementById(id);
-const dashboard = (query = '') => chrome.tabs.create({ url: chrome.runtime.getURL(`src/dashboard/index.html${query}`) }).then(() => window.close());
-
-const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-const url = tab?.url || '';
-const scripts = Object.values(await loadScripts()).map((s) => ({ ...s, meta: parseMeta(s.code).meta }));
-const status = (await chrome.runtime.sendMessage({ type: 'status' }))?.value || {};
-const errors = status.syncStatus?.errors || {};
-const runtimeErrors = status.scriptErrors || {};
-
-$('banner').hidden = status.userScripts !== false;
-$('fix').onclick = () => chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
-$('open-dashboard').onclick = () => dashboard();
-$('new-here').onclick = () => dashboard(/^https?:/.test(url) ? `?new=${encodeURIComponent(new URL(url).origin)}` : '?new=');
-
-function row(s) {
-  const toggle = Object.assign(document.createElement('input'), { type: 'checkbox', className: 'switch', checked: !!s.enabled });
-  toggle.title = s.enabled ? 'Disable' : 'Enable';
-  toggle.onchange = async () => {
-    if (toggle.checked) await requestPermissionsFor(s.code);
-    await patchScript(s.id, { enabled: toggle.checked });
-  };
-  const name = Object.assign(document.createElement('span'), { className: 'name', textContent: s.meta.name || '(unnamed)' });
-  name.onclick = () => dashboard(`?id=${s.id}`);
-  const mode = s.options?.sandbox || s.meta.sandbox;
-  const chip = Object.assign(document.createElement('span'), { className: `chip ${mode}`, textContent: mode });
-  const li = document.createElement('li');
-  li.append(toggle, name, chip);
-  if (errors[s.id]) li.append(Object.assign(document.createElement('span'), { className: 'error', textContent: '⚠', title: errors[s.id] }));
-  const latest = runtimeErrors[s.id]?.[0];
-  if (!latest) return li;
-  // Show the latest runtime error under the script; click to dismiss it.
-  const msg = Object.assign(document.createElement('div'), { className: 'error-line', title: `${latest.message}\n\nClick to dismiss` });
-  msg.textContent = `⚠ ${latest.message.split('\n')[0]}`;
-  msg.onclick = async () => { await chrome.runtime.sendMessage({ type: 'errors.clear', id: s.id }); msg.remove(); };
-  const wrap = document.createElement('div');
-  wrap.append(li, msg);
-  return wrap;
+/*
+ * $(id) -> the element with that id
+ */
+function $(id) {
+    return document.getElementById(id);
 }
 
-function fill(list, items, empty) {
-  list.replaceChildren(...items);
-  if (!items.length && empty) list.replaceChildren(Object.assign(document.createElement('div'), { className: 'empty', textContent: empty }));
+/*
+ * el(tag, class_name, text) -> a new element
+ */
+function el(tag, class_name, text) {
+    const node = document.createElement(tag);
+    if (class_name) {
+        node.className = class_name;
+    }
+    if (text !== undefined) {
+        node.textContent = text;
+    }
+    return node;
 }
 
-const mode = (s) => s.options?.sandbox || s.meta.sandbox;
-const onPage = scripts.filter((s) => mode(s) !== 'extension' && urlMatches(s.meta, url, s.options));
-fill($('page-scripts'), onPage.map(row), 'No scripts match this page.');
-
-const background = scripts.filter((s) => mode(s) === 'extension');
-$('bg-section').hidden = !background.length;
-fill($('bg-scripts'), background.map(row));
-
-const menus = (await chrome.runtime.sendMessage({ type: 'menu.list', tabId: tab?.id ?? -1 }))?.value || [];
-$('commands-section').hidden = !menus.length;
-const names = Object.fromEntries(scripts.map((s) => [s.id, s.meta.name]));
-fill($('commands'), menus.map((m) => {
-  const li = document.createElement('li');
-  li.className = 'command';
-  li.append(Object.assign(document.createElement('span'), { className: 'name', textContent: m.caption }),
-    Object.assign(document.createElement('span'), { className: 'from', textContent: names[m.scriptId] || '' }));
-  li.onclick = async () => {
-    await chrome.runtime.sendMessage({ type: 'menu.run', conn: m.conn, id: m.id });
+/*
+ * open_dashboard(query) — open the dashboard in a tab and close the popup
+ */
+async function open_dashboard(query) {
+    await chrome.tabs.create({ url: chrome.runtime.getURL(`src/dashboard/index.html${query || ''}`) });
     window.close();
-  };
-  return li;
-}));
+}
+
+/*
+ * mode_of(s) -> the sandbox a script runs in, options first
+ */
+function mode_of(s) {
+    return (s.options && s.options.sandbox) || s.meta.sandbox;
+}
+
+/*
+ * script_row(s, status) -> the row for one script (toggle, name, mode, errors)
+ */
+function script_row(s, status) {
+    const sync_errors = status.sync_status ? status.sync_status.errors || {} : {};
+    const runtime_errors = status.script_errors || {};
+
+    const toggle = el('input', 'switch');
+    toggle.type = 'checkbox';
+    toggle.checked = !!s.enabled;
+    toggle.title = s.enabled ? 'Disable' : 'Enable';
+    toggle.addEventListener('change', async function () {
+        if (toggle.checked) {
+            await request_permissions_for(s.code); // first await: keeps the user gesture
+        }
+        await patch_script(s.id, { enabled: toggle.checked });
+    });
+
+    const name = el('span', 'name', s.meta.name || '(unnamed)');
+    name.addEventListener('click', function () {
+        open_dashboard(`?id=${s.id}`);
+    });
+    const li = el('li');
+    li.append(toggle, name, el('span', `chip ${mode_of(s)}`, mode_of(s)));
+    if (sync_errors[s.id]) {
+        const warn = el('span', 'error', '⚠');
+        warn.title = sync_errors[s.id];
+        li.append(warn);
+    }
+
+    const errors = runtime_errors[s.id];
+    if (!errors || errors.length === 0) {
+        return li;
+    }
+    // Show the latest runtime error under the script; click to dismiss it.
+    const latest = errors[0];
+    const line = el('div', 'error-line', `⚠ ${latest.message.split('\n')[0]}`);
+    line.title = `${latest.message}\n\nClick to dismiss`;
+    line.addEventListener('click', async function () {
+        await chrome.runtime.sendMessage({ type: 'errors.clear', id: s.id });
+        line.remove();
+    });
+    const wrap = el('div');
+    wrap.append(li, line);
+    return wrap;
+}
+
+/*
+ * command_row(item, names) -> the row for one menu command
+ */
+function command_row(item, names) {
+    const li = el('li', 'command');
+    li.append(el('span', 'name', item.caption), el('span', 'from', names[item.script_id] || ''));
+    li.addEventListener('click', async function () {
+        await chrome.runtime.sendMessage({ type: 'menu.run', conn: item.conn, id: item.id });
+        window.close();
+    });
+    return li;
+}
+
+/*
+ * fill(list, rows, empty) — show rows in list, or the empty message
+ */
+function fill(list, rows, empty) {
+    list.replaceChildren(...rows);
+    if (rows.length === 0 && empty) {
+        list.replaceChildren(el('div', 'empty', empty));
+    }
+}
+
+/*
+ * main() — build the popup for the active tab
+ */
+async function main() {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs.length > 0 ? tabs[0] : null;
+    const url = tab !== null && tab.url ? tab.url : '';
+    const stored = await load_scripts();
+    const reply = await chrome.runtime.sendMessage({ type: 'status' });
+    const status = reply && reply.ok ? reply.value : {};
+
+    $('banner').hidden = status.user_scripts !== false;
+    $('fix').addEventListener('click', function () {
+        chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
+    });
+    $('open-dashboard').addEventListener('click', function () {
+        open_dashboard('');
+    });
+    $('new-here').addEventListener('click', function () {
+        open_dashboard(/^https?:/.test(url) ? `?new=${encodeURIComponent(new URL(url).origin)}` : '?new=');
+    });
+
+    const names = {};
+    const on_page = [];
+    const background = [];
+    for (const id of Object.keys(stored)) {
+        const s = Object.assign({}, stored[id], { meta: parse_meta(stored[id].code).meta });
+        names[s.id] = s.meta.name;
+        if (mode_of(s) === 'extension') {
+            background.push(script_row(s, status));
+        } else if (url_matches(s.meta, url, s.options)) {
+            on_page.push(script_row(s, status));
+        }
+    }
+    fill($('page-scripts'), on_page, 'No scripts match this page.');
+    $('bg-section').hidden = background.length === 0;
+    fill($('bg-scripts'), background);
+
+    const menu_reply = await chrome.runtime.sendMessage({ type: 'menu.list', tab_id: tab !== null ? tab.id : -1 });
+    const menus = menu_reply && menu_reply.ok ? menu_reply.value : [];
+    $('commands-section').hidden = menus.length === 0;
+    const rows = [];
+    for (const item of menus) {
+        rows.push(command_row(item, names));
+    }
+    fill($('commands'), rows);
+}
+
+main();

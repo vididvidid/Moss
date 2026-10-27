@@ -1,123 +1,244 @@
-// Turns one script into a standalone MV3 extension containing only what it uses:
-// the runtime files for its features, the host files for its privileged features,
-// the permissions those need, and a popup only when it has menu commands.
+'use strict';
+/*
+ * Turns one script into a standalone MV3 extension containing only what it uses:
+ * the runtime files for its features, the host files for its privileged features,
+ * the permissions those need, and a popup only when it has menu commands.
+ *
+ * struct export_file { path: string; content: string | Uint8Array; reason: string; }
+ * struct export_result { plan: struct plan; manifest: object; files: struct export_file[]; }
+ */
 import { build, plan, slugify, MOSS_VERSION } from './bundler.js';
-import { HOST_CORE, hostFeature } from '../shared/features.js';
-import { hostPolicy } from './settings.js';
+import { HOST_CORE, host_feature } from '../shared/features.js';
+import { host_policy } from './settings.js';
 
-const ICONS = [16, 48, 128];
+const ICON_SIZES = [16, 48, 128];
+const POPUP_HTML = 'src/export/popup.html';
+const POPUP_JS = 'src/export/popup.js';
 
-function chromeVersion(v) {
-  const parts = String(v || '').split(/[.-]/).map((p) => parseInt(p, 10)).filter((n) => Number.isFinite(n) && n >= 0).slice(0, 4);
-  return parts.length ? parts.map((n) => Math.min(n, 65535)).join('.') : '0.1.0';
+/*
+ * chrome_version(version) -> a version Chrome accepts: up to 4 numbers, each ≤ 65535
+ */
+function chrome_version(version) {
+    const numbers = [];
+    for (const part of String(version || '').split(/[.-]/)) {
+        const n = parseInt(part, 10);
+        if (Number.isFinite(n) && n >= 0 && numbers.length < 4) {
+            numbers.push(Math.min(n, 65535));
+        }
+    }
+    return numbers.length > 0 ? numbers.join('.') : '0.1.0';
 }
 
-/**
+/*
+ * pick(choice, setting, fallback) -> the export dialog's choice, else the setting, else fallback
+ */
+function pick(choice, setting, fallback) {
+    if (choice !== undefined && choice !== null) {
+        return choice;
+    }
+    if (setting !== undefined && setting !== null) {
+        return setting;
+    }
+    return fallback;
+}
+
+/*
+ * names_of(list) -> the .name of each item
+ */
+function names_of(list) {
+    const out = [];
+    for (const item of list) {
+        out.push(item.name);
+    }
+    return out;
+}
+
+/*
+ * export_extension(script, { sources, settings, choices }) -> struct export_result
+ *
  * choices (from the export dialog, all optional):
  *   name, version, description, features: { <feature>: 'include' | 'exclude' },
- *   includeSource, includeReadme, manifest (an edited manifest object that replaces the generated one)
- * Returns { plan, manifest, files: [{ path, content, reason }] }.
+ *   include_source, include_readme, manifest (an edited manifest that replaces the generated one)
  */
-export async function exportExtension(script, { sources, settings, choices = {} }) {
-  const scoped = { ...script, options: { ...script.options, features: { ...script.options?.features, ...choices.features } } };
-  const p = await plan(scoped, { sources, settings, target: 'export' });
-  if (p.errors.length) throw new Error(p.errors.join('\n'));
-  const { meta } = p;
-  const name = choices.name || meta.name;
-  const files = [];
-  const add = (path, content, reason) => files.push({ path, content, reason });
+export async function export_extension(script, args) {
+    const sources = args.sources;
+    const settings = args.settings || {};
+    const choices = args.choices || {};
+    const options = Object.assign({}, script.options);
+    options.features = Object.assign({}, options.features, choices.features);
+    const scoped = Object.assign({}, script, { options: options });
 
-  const code = await build(p, { sources, script: scoped, settings });
-  const needsBackground = p.mode === 'extension' || p.hostFeatures.length > 0;
+    const p = await plan(scoped, { sources: sources, settings: settings, target: 'export' });
+    if (p.errors.length > 0) {
+        throw new Error(p.errors.join('\n'));
+    }
+    const meta = p.meta;
+    const name = choices.name || meta.name;
+    const description = pick(choices.description, null, meta.description);
+    const files = [];
 
-  let manifest = {
-    manifest_version: 3,
-    name,
-    version: chromeVersion(choices.version || meta.version),
-    description: (choices.description ?? meta.description).slice(0, 132),
-    icons: Object.fromEntries(ICONS.map((s) => [s, `icons/icon${s}.png`])),
-    action: { default_title: name, default_icon: { 16: 'icons/icon16.png', 48: 'icons/icon48.png' } },
-  };
-  if (meta.homepage) manifest.homepage_url = meta.homepage;
-  if (p.permissions.length) manifest.permissions = p.permissions.map((x) => x.name);
-  if (p.hostPermissions.length) manifest.host_permissions = p.hostPermissions.map((x) => x.name);
+    /*
+     * add(path, content, reason) — put one file in the export
+     */
+    function add(path, content, reason) {
+        files.push({ path: path, content: content, reason: reason });
+    }
 
-  if (p.mode !== 'extension') {
-    const t = p.targets;
-    const cs = { matches: t.matches, js: ['content.js'], run_at: t.runAt, all_frames: t.allFrames,
-      world: p.mode === 'page' || p.inject === 'raw' ? 'MAIN' : 'ISOLATED' };
-    if (t.excludeMatches.length) cs.exclude_matches = t.excludeMatches;
-    if (t.includeGlobs.length) cs.include_globs = t.includeGlobs;
-    if (t.excludeGlobs.length) cs.exclude_globs = t.excludeGlobs;
-    manifest.content_scripts = [cs];
-    add('content.js', code, `the script (${p.mode} world${p.features.length ? ' + ' + p.features.map((f) => f.name).join(', ') : ''})`);
-  }
+    const code = await build(p, { sources: sources, script: scoped, settings: settings });
+    const needs_background = p.mode === 'extension' || p.host_features.length > 0;
 
-  if (needsBackground) {
-    manifest.background = { service_worker: 'background.js' };
-    add('background.js', await backgroundSource(p, scoped, code, sources, settings),
-      p.mode === 'extension' ? 'the background script' : `privileged side of: ${p.hostFeatures.join(', ')}`);
-  }
+    const icons = {};
+    for (const size of ICON_SIZES) {
+        icons[size] = `icons/icon${size}.png`;
+    }
+    let manifest = {
+        manifest_version: 3,
+        name: name,
+        version: chrome_version(choices.version || meta.version),
+        description: description.slice(0, 132),
+        icons: icons,
+        action: { default_title: name, default_icon: { 16: 'icons/icon16.png', 48: 'icons/icon48.png' } },
+    };
+    if (meta.homepage) {
+        manifest.homepage_url = meta.homepage;
+    }
+    if (p.permissions.length > 0) {
+        manifest.permissions = names_of(p.permissions);
+    }
+    if (p.host_permissions.length > 0) {
+        manifest.host_permissions = names_of(p.host_permissions);
+    }
 
-  if (p.needsPopup) {
-    manifest.action.default_popup = 'popup.html';
-    add('popup.html', POPUP_HTML, 'menu commands');
-    add('popup.js', POPUP_JS, 'menu commands');
-  }
+    if (p.mode !== 'extension') {
+        const t = p.targets;
+        const content_script = {
+            matches: t.matches,
+            js: ['content.js'],
+            run_at: t.run_at,
+            all_frames: t.all_frames,
+            world: (p.mode === 'page' || p.inject === 'raw') ? 'MAIN' : 'ISOLATED',
+        };
+        if (t.exclude_matches.length > 0) {
+            content_script.exclude_matches = t.exclude_matches;
+        }
+        if (t.include_globs.length > 0) {
+            content_script.include_globs = t.include_globs;
+        }
+        if (t.exclude_globs.length > 0) {
+            content_script.exclude_globs = t.exclude_globs;
+        }
+        manifest.content_scripts = [content_script];
+        const used = names_of(p.features);
+        add('content.js', code, `the script (${p.mode} world${used.length > 0 ? ' + ' + used.join(', ') : ''})`);
+    }
 
-  for (const s of ICONS) add(`icons/icon${s}.png`, await sources.binary(`icons/icon${s}.png`), 'extension icon');
+    if (needs_background) {
+        manifest.background = { service_worker: 'background.js' };
+        const reason = p.mode === 'extension' ? 'the background script' : `privileged side of: ${p.host_features.join(', ')}`;
+        add('background.js', await background_source(p, scoped, code, sources, settings), reason);
+    }
 
-  if (choices.manifest) manifest = choices.manifest;
-  if (choices.includeSource ?? settings?.['export.includeSource'] ?? true) {
-    add(`source/${slugify(meta.name)}.user.js`, script.code, 'original userscript (not loaded by the browser)');
-    for (const m of p.modules) add(`source/modules/${m.name}.js`, m.src, 'module source (not loaded, already bundled)');
-  }
-  if (choices.includeReadme ?? settings?.['export.includeReadme'] ?? true) {
-    add('README.md', readme(manifest, p, files), 'how to load and publish');
-  }
-  files.unshift({ path: 'manifest.json', content: JSON.stringify(manifest, null, 2) + '\n', reason: 'extension manifest' });
-  return { plan: p, manifest, files };
+    if (p.needs_popup) {
+        manifest.action.default_popup = 'popup.html';
+        add('popup.html', await sources.text(POPUP_HTML), 'menu commands');
+        add('popup.js', await sources.text(POPUP_JS), 'menu commands');
+    }
+
+    for (const size of ICON_SIZES) {
+        add(`icons/icon${size}.png`, await sources.binary(`icons/icon${size}.png`), 'extension icon');
+    }
+
+    if (choices.manifest) {
+        manifest = choices.manifest;
+    }
+    if (pick(choices.include_source, settings['export.include_source'], true)) {
+        add(`source/${slugify(meta.name)}.user.js`, script.code, 'original userscript (not loaded by the browser)');
+        for (const mod of p.modules) {
+            add(`source/modules/${mod.name}.js`, mod.src, 'module source (not loaded, already bundled)');
+        }
+    }
+    if (pick(choices.include_readme, settings['export.include_readme'], true)) {
+        add('README.md', readme(manifest, p, files), 'how to load and publish');
+    }
+    files.unshift({ path: 'manifest.json', content: JSON.stringify(manifest, null, 2) + '\n', reason: 'extension manifest' });
+    return { plan: p, manifest: manifest, files: files };
 }
 
-async function backgroundSource(p, script, code, sources, settings) {
-  const out = [`// ${p.meta.name} — background service worker generated by Moss ${MOSS_VERSION}`];
-  if (p.hostFeatures.length) {
-    out.push(await sources.text(HOST_CORE));
-    for (const f of p.hostFeatures) out.push(await sources.text(hostFeature(f)));
-    const info = { id: script.id, name: p.meta.name, grants: p.meta.grant, connect: p.meta.connect };
-    out.push(`const host = MossHost({
-  icon: chrome.runtime.getURL('icons/icon128.png'),
-  policy: ${JSON.stringify({ ...hostPolicy(settings || {}), chromeNamespaces: null })},
-  getScript: async () => (${JSON.stringify(info)}),
-});`);
+/*
+ * background_source(p, script, code, sources, settings) -> background.js of the export
+ */
+async function background_source(p, script, code, sources, settings) {
+    const out = [`// ${p.meta.name} — background service worker generated by Moss ${MOSS_VERSION}`];
+    if (p.host_features.length > 0) {
+        out.push(await sources.text(HOST_CORE));
+        for (const name of p.host_features) {
+            out.push(await sources.text(host_feature(name)));
+        }
+        const info = { id: script.id, name: p.meta.name, grants: p.meta.grant, connect: p.meta.connect };
+        const policy = Object.assign(host_policy(settings), { chrome_namespaces: null });
+        const init = [
+            '(function () {',
+            '    \'use strict\';',
+            '    const SCRIPT = ' + JSON.stringify(info) + ';',
+            '    const host = moss_host({',
+            '        icon: chrome.runtime.getURL(\'icons/icon128.png\'),',
+            '        policy: ' + JSON.stringify(policy) + ',',
+            '        get_script: async function () {',
+            '            return SCRIPT;',
+            '        },',
+            '    });',
+        ];
+        if (p.mode === 'extension') {
+            init.push('    globalThis.moss_host_instance = host;');
+        } else {
+            init.push(
+                '    chrome.runtime.onConnect.addListener(function (port) {',
+                '        if (!port.sender || port.sender.id !== chrome.runtime.id || !port.name.startsWith(\'moss:\')) {',
+                '            return;',
+                '        }',
+                '        const tab_id = port.sender.tab ? port.sender.tab.id : null;',
+                '        host.attach_port(port, { script_id: SCRIPT.id, tab_id: tab_id, url: port.sender.url });',
+                '    });');
+        }
+        if (p.needs_popup) {
+            init.push(
+                '    chrome.runtime.onMessage.addListener(function (msg, sender, respond) {',
+                '        if (sender.id !== chrome.runtime.id || sender.tab || !msg) {',
+                '            return;',
+                '        }',
+                '        if (msg.type === \'menu.list\') {',
+                '            respond(host.list_menus(msg.tab_id));',
+                '        } else if (msg.type === \'menu.run\') {',
+                '            respond(host.run_menu(msg.conn, msg.id));',
+                '        }',
+                '    });');
+        }
+        init.push('})();');
+        out.push(init.join('\n'));
+    }
     if (p.mode === 'extension') {
-      out.push('globalThis.__mossHost = host;');
-    } else {
-      out.push(`chrome.runtime.onConnect.addListener((port) => {
-  if (port.sender?.id !== chrome.runtime.id || !port.name.startsWith('moss:')) return;
-  host.attachPort(port, { scriptId: ${JSON.stringify(script.id)}, tabId: port.sender.tab?.id ?? null, url: port.sender.url });
-});`);
+        out.push(code);
     }
-    if (p.needsPopup) {
-      out.push(`chrome.runtime.onMessage.addListener((msg, sender, respond) => {
-  if (sender.id !== chrome.runtime.id || sender.tab) return;
-  if (msg?.type === 'menu.list') respond(host.listMenus(msg.tabId));
-  if (msg?.type === 'menu.run') respond(host.runMenu(msg.conn, msg.id));
-});`);
-    }
-  }
-  if (p.mode === 'extension') out.push(code);
-  return out.join('\n\n') + '\n';
+    return out.join('\n\n') + '\n';
 }
 
+/*
+ * readme(manifest, p, files) -> README.md of the export
+ */
 function readme(manifest, p, files) {
-  const list = files.map((f) => `| \`${f.path}\` | ${f.reason} |`).join('\n');
-  const perms = [...p.permissions, ...p.hostPermissions].map((x) => `- \`${x.name}\` — ${x.reason}`).join('\n') || '- none';
-  return `# ${manifest.name}
+    const file_rows = [];
+    for (const f of files) {
+        file_rows.push(`| \`${f.path}\` | ${f.reason} |`);
+    }
+    const permission_rows = [];
+    for (const x of p.permissions.concat(p.host_permissions)) {
+        permission_rows.push(`- \`${x.name}\` — ${x.reason}`);
+    }
+    return `# ${manifest.name}
 
 ${manifest.description || ''}
 
-Exported from a [Moss](https://github.com/) userscript. It runs on its own: Moss is not needed.
+Exported from a [Moss](https://github.com/vididvidid/Moss) userscript. It runs on its own: Moss is not needed.
 
 ## Try it
 1. Open \`chrome://extensions\` and turn on **Developer mode**.
@@ -128,39 +249,11 @@ Zip this folder (with \`manifest.json\` at the root) and upload it at https://ch
 Swap the icons in \`icons/\` for your own first.
 
 ## Permissions
-${perms}
+${permission_rows.length > 0 ? permission_rows.join('\n') : '- none'}
 
 ## Files
 | file | why it is here |
 |---|---|
-${list}
+${file_rows.join('\n')}
 `;
 }
-
-const POPUP_HTML = `<!doctype html>
-<meta charset="utf-8">
-<style>
-  body { margin: 0; min-width: 220px; font: 13px system-ui, sans-serif; color: #1c2418; background: #fff; }
-  @media (prefers-color-scheme: dark) { body { color: #e3ead9; background: #1b1f18; } button:hover { background: #2a3125; } }
-  h1 { font-size: 12px; margin: 0; padding: 10px 12px 6px; opacity: .7; }
-  button { display: block; width: 100%; text-align: left; padding: 8px 12px; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
-  button:hover { background: #eef3e8; }
-  p { padding: 4px 12px 12px; margin: 0; opacity: .6; }
-</style>
-<h1 id="title"></h1>
-<div id="list"></div>
-<script type="module" src="popup.js"></script>
-`;
-
-const POPUP_JS = `const list = document.getElementById('list');
-document.getElementById('title').textContent = chrome.runtime.getManifest().name;
-const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-const items = (await chrome.runtime.sendMessage({ type: 'menu.list', tabId: tab?.id ?? -1 })) || [];
-for (const item of items) {
-  const b = document.createElement('button');
-  b.textContent = item.caption;
-  b.onclick = async () => { await chrome.runtime.sendMessage({ type: 'menu.run', conn: item.conn, id: item.id }); window.close(); };
-  list.append(b);
-}
-if (!items.length) list.innerHTML = '<p>No commands on this page.</p>';
-`;

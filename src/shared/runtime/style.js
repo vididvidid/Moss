@@ -1,25 +1,52 @@
-/* Feature: style — GM_addStyle / GM_addElement. Purely local, no bridge needed. */
+/*
+ * Feature: style — GM_addStyle / GM_addElement. Purely local, no bridge needed.
+ */
 (function () {
-  function parent() { return document.head || document.documentElement; }
+    'use strict';
 
-  M.api.GM_addStyle = function (css) {
-    var el = document.createElement('style');
-    el.textContent = String(css);
-    parent().appendChild(el);
-    return el;
-  };
-  // GM_addElement(tag, attrs) or GM_addElement(parentNode, tag, attrs)
-  M.api.GM_addElement = function (a, b, c) {
-    var into = typeof a === 'string' ? parent() : a;
-    var tag = typeof a === 'string' ? a : b;
-    var attrs = (typeof a === 'string' ? b : c) || {};
-    var el = document.createElement(tag);
-    Object.keys(attrs).forEach(function (k) {
-      if (k === 'textContent') el.textContent = attrs[k]; else el.setAttribute(k, attrs[k]);
-    });
-    into.appendChild(el);
-    return el;
-  };
-  M.GM.addStyle = function (css) { return Promise.resolve(M.api.GM_addStyle(css)); };
-  M.GM.addElement = function () { return Promise.resolve(M.api.GM_addElement.apply(null, arguments)); };
+    /*
+     * head() -> where new <style> elements go
+     */
+    function head() {
+        return document.head || document.documentElement;
+    }
+
+    /*
+     * add_style(css) -> the new <style> element
+     */
+    function add_style(css) {
+        const el = document.createElement('style');
+        el.textContent = String(css);
+        head().appendChild(el);
+        return el;
+    }
+
+    /*
+     * add_element(tag, attrs) or add_element(parent, tag, attrs) -> the new element
+     */
+    function add_element(a, b, c) {
+        const has_parent = typeof a !== 'string';
+        const parent = has_parent ? a : head();
+        const tag = has_parent ? b : a;
+        const attrs = (has_parent ? c : b) || {};
+        const el = document.createElement(tag);
+        for (const key of Object.keys(attrs)) {
+            if (key === 'textContent') {
+                el.textContent = attrs[key];
+            } else {
+                el.setAttribute(key, attrs[key]);
+            }
+        }
+        parent.appendChild(el);
+        return el;
+    }
+
+    rt.api.GM_addStyle = add_style;
+    rt.api.GM_addElement = add_element;
+    rt.gm.addStyle = function (css) {
+        return Promise.resolve(add_style(css));
+    };
+    rt.gm.addElement = function (a, b, c) {
+        return Promise.resolve(add_element(a, b, c));
+    };
 })();
