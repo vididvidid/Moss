@@ -24,6 +24,7 @@ import './shared/host/chrome.js';
 import './shared/host/window.js';
 import './shared/host/tab.js';
 import './shared/host/cookie.js';
+import './shared/host/audio.js';
 import { build, build_relay, plan, with_blocked_pages } from './lib/bundler.js';
 import { parse_meta, url_matches } from './lib/meta.js';
 import { migrate_state, upgrade_examples, SCHEMA_VERSION } from './lib/migrate.js';
@@ -31,13 +32,15 @@ import { missing_permissions } from './lib/permissions.js';
 import { host_policy, resolve_settings } from './lib/settings.js';
 import { load_text, sources_create } from './lib/sources.js';
 import { load_modules, load_moss_enabled, load_scripts, load_settings_raw, load_updates, new_id, put_script, record_update, tokens_for } from './lib/store.js';
-import { apply_update, check_for_update } from './lib/updater.js';
+import { apply_update, check_for_update, effective_source } from './lib/updater.js';
 
 const RUNNER = 'src/runner/offscreen.html';
+const DASHBOARD = 'src/dashboard/index.html';
+const OPEN_MOSS_ITEM = 'moss-open';
 const EXAMPLES = ['page-tools.user.js', 'fetch-logger.user.js'];
 const EXAMPLE_MODULES = { 'utils/text': 'src/examples/utils-text.js' };
 const UPDATE_ALARM = 'moss-updates';
-const USER_JS_RE = /^https?:\/\/[^?#]+\.user\.js(?:[?#].*)?$/i;
+const USER_JS_RE = /^https?:\/\/[^?#]+\.(?:user\.js|moss|moss\.js)(?:[?#].*)?$/i;
 const BADGE_COLOR = '#2f7d4f';
 const ERROR_COLOR = '#c0392b';
 
@@ -113,8 +116,40 @@ chrome.storage.onChanged.addListener(function (changes, area) {
         return;
     }
     state = null;
-    schedule_sync();
+    const synced = schedule_sync();
+    const flipped = changes.moss_enabled && (changes.moss_enabled.oldValue !== false) !== (changes.moss_enabled.newValue !== false);
+    if (flipped) {
+        // Turned on or off: scripts already injected stay until their page reloads.
+        synced.then(reload_after_switch);
+    }
 });
+
+// ---------- reloading pages when Moss is switched on or off ----------
+
+/*
+ * reload_after_switch() — reload the pages the global switch affects (Settings →
+ * General → "When Moss is switched on or off"), so no script is left running
+ */
+async function reload_after_switch() {
+    const st = await get_state();
+    const mode = st.settings['general.on_switch'];
+    if (mode === 'nothing') {
+        return;
+    }
+    const query = mode === 'active' ? { active: true, lastFocusedWindow: true } : {};
+    const tabs = await chrome.tabs.query(query);
+    for (const tab of tabs) {
+        // Count by each script's own switch: the global one has just changed.
+        if (tab.discarded || page_scripts_on(st, tab.url) === 0) {
+            continue;
+        }
+        try {
+            await chrome.tabs.reload(tab.id);
+        } catch (e) {
+            // tab closed meanwhile
+        }
+    }
+}
 
 // ---------- privileged API host ----------
 
@@ -405,7 +440,15 @@ const tabs_with_errors = new Set();   // tab ids where a script reported an erro
  * running_count(st, url) -> how many enabled page scripts run on url
  */
 function running_count(st, url) {
-    if (!st.enabled || !/^(https?|file|ftp):/.test(url || '')) {
+    return st.enabled ? page_scripts_on(st, url) : 0;
+}
+
+/*
+ * page_scripts_on(st, url) -> how many page scripts whose own switch is on cover url,
+ * whatever the global switch says
+ */
+function page_scripts_on(st, url) {
+    if (!/^(https?|file|ftp):/.test(url || '')) {
         return 0;
     }
     let count = 0;
@@ -508,6 +551,10 @@ async function rebuild_menus() {
     await chrome.contextMenus.removeAll();
     menu_commands = {};
     const st = await get_state();
+    if (st.settings['menu.open_moss']) {
+        // Shown even while Moss is off, so it can be switched back on from there.
+        chrome.contextMenus.create({ id: OPEN_MOSS_ITEM, title: 'Open Moss', contexts: ['all'] });
+    }
     if (!st.enabled) {
         return;
     }
@@ -530,6 +577,28 @@ async function rebuild_menus() {
         menu_commands[key] = { conn: commands[i].conn, id: commands[i].id };
         chrome.contextMenus.create({ id: key, title: commands[i].caption, contexts: ['all'] });
     }
+}
+
+/*
+ * open_dashboard(tab) — "Open Moss" in the right-click menu: bring an open dashboard
+ * tab to the front, or open one next to the tab that was clicked
+ */
+async function open_dashboard(tab) {
+    const url = chrome.runtime.getURL(DASHBOARD);
+    const contexts = await chrome.runtime.getContexts({ contextTypes: ['TAB'], documentUrls: [url] });
+    for (const ctx of contexts) {
+        if (ctx.tabId >= 0) {
+            const shown = await chrome.tabs.update(ctx.tabId, { active: true });
+            await chrome.windows.update(shown.windowId, { focused: true });
+            return;
+        }
+    }
+    const create = { url: url };
+    if (tab && tab.id >= 0) {
+        create.index = tab.index + 1;
+        create.openerTabId = tab.id;
+    }
+    await chrome.tabs.create(create);
 }
 
 /*
@@ -566,6 +635,12 @@ async function run_context_script(id, tab, frame_id) {
 if (chrome.contextMenus) {
     chrome.contextMenus.onClicked.addListener(function (info, tab) {
         const id = String(info.menuItemId);
+        if (id === OPEN_MOSS_ITEM) {
+            open_dashboard(tab).catch(function (e) {
+                console.error('Moss: could not open the dashboard', e);
+            });
+            return;
+        }
         if (id.startsWith('moss-s:')) {
             run_context_script(id.slice(7), tab, info.frameId).catch(function (e) {
                 console.error('Moss: context-menu script failed', e);
@@ -579,7 +654,7 @@ if (chrome.contextMenus) {
     });
 }
 
-// ---------- installing scripts from .user.js links ----------
+// ---------- installing scripts from .user.js / .moss links ----------
 
 const offered = {};   // url -> time it was last offered, so a reload doesn't ask again at once
 
@@ -695,12 +770,13 @@ function run_updates(opts) {
         }
         for (const id of Object.keys(st.scripts)) {
             const s = st.scripts[id];
-            if (!s.source || !s.source.url || s.source.kind === 'local') {
+            const src = effective_source(s, st.settings);
+            if (src === null || src.kind === 'local') {
                 continue; // local files are watched by the dashboard
             }
-            const every = (s.source.every || st.settings['update.every']) * 60e3;
+            const every = (src.every || st.settings['update.every']) * 60e3;
             const last = updates[id] ? updates[id].checked_at : 0;
-            if (!opts.all && (!s.source.auto || Date.now() - last < every)) {
+            if (!opts.all && (!src.auto || Date.now() - last < every)) {
                 continue;
             }
             if (!opts.all && !s.enabled && !st.settings['update.disabled_scripts']) {

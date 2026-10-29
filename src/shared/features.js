@@ -129,6 +129,14 @@ export const FEATURES = {
         host: true,
         permissions: ['cookies'],
     },
+    audio: {
+        label: 'Tab audio',
+        summary: 'GM_audio.setMute / getState / addStateChangeListener — mute the script\'s tab and follow its sound',
+        api: ['GM_audio'],
+        detect: uses_any(['GM[_.]audio']),
+        grants: ['GM_audio', 'GM.audio'],
+        host: true,
+    },
     chrome: {
         label: 'Browser APIs',
         summary: 'moss.chrome.<namespace> — granted with @grant chrome.<namespace>',

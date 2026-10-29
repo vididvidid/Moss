@@ -9,6 +9,7 @@
  *     el: HTMLTextAreaElement;
  *     indent: string;             one level: spaces or "\t"
  *     save();                     save the open item
+ *     format();                   auto-format the whole text
  *     ask(question, value) -> string | null;   prompt for text
  *     search: { query, replacement }; remembered between finds
  * }
@@ -38,6 +39,7 @@ export const DEFAULT_KEYS = {
     'Ctrl-R': 'replace',
     'Ctrl-Shift-R': 'replace_all',
     'Ctrl-S': 'save',
+    'Alt-Shift-F': 'format_document',
     'Ctrl-Z': 'undo',
     'Ctrl-U': 'undo',
     'Ctrl-Y': 'redo',
@@ -487,6 +489,12 @@ export const COMMANDS = {
         label: 'Save',
         run: function (ctx) {
             ctx.save();
+        },
+    },
+    format_document: {
+        label: 'Auto-format the code',
+        run: function (ctx) {
+            ctx.format();
         },
     },
     undo: {

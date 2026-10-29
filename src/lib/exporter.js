@@ -8,6 +8,7 @@
  * struct export_result { plan: struct plan; manifest: object; files: struct export_file[]; }
  */
 import { build, build_relay, plan, slugify, MOSS_VERSION } from './bundler.js';
+import { file_extension } from './formats.js';
 import { HOST_CORE, host_feature } from '../shared/features.js';
 import { host_policy } from './settings.js';
 
@@ -144,7 +145,7 @@ export async function export_extension(script, args) {
         manifest = choices.manifest;
     }
     if (pick(choices.include_source, settings['export.include_source'], true)) {
-        add(`source/${slugify(meta.name)}.user.js`, script.code, 'original userscript (not loaded by the browser)');
+        add(`source/${slugify(meta.name)}${file_extension(meta.format)}`, script.code, 'original script (not loaded by the browser)');
         for (const mod of p.modules) {
             add(`source/modules/${mod.name}.js`, mod.src, 'module source (not loaded, already bundled)');
         }

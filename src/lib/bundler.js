@@ -25,6 +25,7 @@
  *     context_menu: boolean;                     @run-at context-menu: run from the right-click menu
  * }
  */
+import { file_extension } from './formats.js';
 import { meta_block, parse_meta, parse_resources, targets } from './meta.js';
 import { ALL_API, CHROME_PERMISSION, FEATURES, RUNTIME_CORE, RUNTIME_RELAY, runtime_feature, runtime_transport } from '../shared/features.js';
 
@@ -340,9 +341,10 @@ export async function build(p, args) {
     const script = args.script;
     const settings = args.settings || {};
     const slug = slugify(p.meta.name);
+    const source_url = `//# sourceURL=moss/${slug}${file_extension(p.meta.format)}`;
     const strict_line = p.strict ? '\'use strict\';' : '';
     if (p.inject === 'raw') {
-        return [strict_line, script.code, `//# sourceURL=moss/${slug}.user.js`].join('\n');
+        return [strict_line, script.code, source_url].join('\n');
     }
 
     const feature_names = [];
@@ -409,7 +411,7 @@ export async function build(p, args) {
     for (const url of p.meta.require) {
         parts.push(`// @require ${url}\n${await sources.require(url)}`);
     }
-    parts.push(script.code, '});', '})();', `//# sourceURL=moss/${slug}.user.js`);
+    parts.push(script.code, '});', '})();', source_url);
     return parts.join('\n');
 }
 

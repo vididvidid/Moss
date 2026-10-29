@@ -10,6 +10,8 @@
  *     auto: boolean;        auto-update on/off
  *     every: number;        minutes between auto checks
  *     updated_at: number;   when the code last came from the source
+ *     from_header: boolean; built from @updateURL / @downloadURL (see header_source),
+ *                           not stored; updates only when @version goes up
  * }
  *
  * struct update_check {
@@ -18,7 +20,7 @@
  * }
  */
 import { fetch_text } from './github.js';
-import { parse_meta } from './meta.js';
+import { MISSING_HEADER, parse_meta } from './meta.js';
 
 export const EVERY_OPTIONS = [
     { value: 15, label: 'every 15 minutes' }, { value: 30, label: 'every 30 minutes' },
@@ -82,6 +84,78 @@ export async function source_create(url, label, code, settings) {
 }
 
 /*
+ * header_urls(meta) -> { version_url, code_url } from @updateURL / @downloadURL, or null.
+ * Like Tampermonkey: @updateURL may be a ".meta.js" holding only the header, and a
+ * missing @downloadURL is the same URL ending in ".user.js".
+ */
+function header_urls(meta) {
+    const update_url = /^https:\/\//.test(meta.update_url) ? meta.update_url : '';
+    const download_url = /^https:\/\//.test(meta.download_url) ? meta.download_url : '';
+    if (update_url === '' && download_url === '') {
+        return null;
+    }
+    let code_url = download_url;
+    if (code_url === '') {
+        code_url = update_url.replace(/\.meta\.js(?=$|[?#])/, '.user.js');
+    }
+    return { version_url: update_url !== '' ? update_url : code_url, code_url: code_url };
+}
+
+/*
+ * header_source(script, settings) -> a struct source from the script's own @updateURL /
+ * @downloadURL, for scripts that were not imported from a link; null when it has none
+ * or Settings → Updates turns these checks off
+ */
+export function header_source(script, settings) {
+    const s = settings || {};
+    if (script.source || s['update.header_urls'] === false) {
+        return null;
+    }
+    const urls = header_urls(parse_meta(script.code).meta);
+    if (urls === null) {
+        return null;
+    }
+    return {
+        url: urls.code_url, version_url: urls.version_url, label: urls.code_url, hash: '',
+        auto: true, every: s['update.every'] || 360, from_header: true,
+    };
+}
+
+/*
+ * effective_source(script, settings) -> where the script updates from, or null
+ */
+export function effective_source(script, settings) {
+    if (script.source && script.source.url) {
+        return script.source;
+    }
+    return header_source(script, settings);
+}
+
+/*
+ * check_header_update(script, src, options) -> struct update_check for a script that
+ * updates from its own @updateURL / @downloadURL: only a higher @version counts
+ */
+async function check_header_update(script, src, options) {
+    const settings = options.settings || {};
+    const fetch_opts = { token: settings['github.token'], bust: !!options.manual, fetch_impl: options.fetch_impl };
+    const version_text = await fetch_text(src.version_url, fetch_opts);
+    const remote = parse_meta(version_text).meta.version;
+    const result = { status: 'current', code: script.code, hash: '', version: remote };
+    if (compare_versions(remote, parse_meta(script.code).meta.version) <= 0) {
+        return result;
+    }
+    const code = src.version_url === src.url ? version_text : await fetch_text(src.url, fetch_opts);
+    if (parse_meta(code).errors.indexOf(MISSING_HEADER) >= 0) {
+        throw new Error(`The file at ${src.url} has no script header.`);
+    }
+    result.status = 'update';
+    result.code = code;
+    result.hash = await sha256(code);
+    result.version = parse_meta(code).meta.version;
+    return result;
+}
+
+/*
  * check_for_update(script, opts) -> struct update_check. Never writes anything.
  *   opts.settings: resolved settings; opts.manual: a person asked (skip caches,
  *   ignore the "only newer @version" rule); opts.fetch_impl: fetch replacement for tests.
@@ -89,16 +163,17 @@ export async function source_create(url, label, code, settings) {
 export async function check_for_update(script, opts) {
     const options = opts || {};
     const settings = options.settings || {};
-    const src = script.source;
-    if (!src || !src.url) {
+    const src = effective_source(script, settings);
+    if (src === null) {
         throw new Error('This script has no source to update from.');
+    }
+    if (src.from_header) {
+        return check_header_update(script, src, options);
     }
     const code = await fetch_text(src.url, { token: settings['github.token'], bust: !!options.manual, fetch_impl: options.fetch_impl });
     const parsed = parse_meta(code);
-    for (const error of parsed.errors) {
-        if (error.startsWith('Missing')) {
-            throw new Error('The file at the source has no "// ==UserScript==" header.');
-        }
+    if (parsed.errors.indexOf(MISSING_HEADER) >= 0) {
+        throw new Error('The file at the source has no script header ("// ==UserScript==" or "// ==Moss==").');
     }
 
     const hash = await sha256(code);
@@ -127,6 +202,10 @@ export async function check_for_update(script, opts) {
  * apply_update(script, check) -> a copy of script holding the fetched code
  */
 export function apply_update(script, check) {
+    if (!script.source) {
+        // Updated from its own @downloadURL: it keeps updating from the header.
+        return Object.assign({}, script, { code: check.code });
+    }
     const source = Object.assign({}, script.source, { hash: check.hash, updated_at: Date.now() });
     return Object.assign({}, script, { code: check.code, source: source });
 }

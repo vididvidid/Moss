@@ -121,7 +121,7 @@ test('update decisions: current, update, local edits, @version rule', async func
     assert.equal((await check_for_update(s, Object.assign({ manual: true }, strict))).status, 'update');
 
     files[url] = 'console.log("not a userscript")';
-    await assert.rejects(check_for_update(s, opts), /no "\/\/ ==UserScript==" header/);
+    await assert.rejects(check_for_update(s, opts), /no script header/);
     delete files[url];
     await assert.rejects(check_for_update(s, opts), /404.*token/);
 });
