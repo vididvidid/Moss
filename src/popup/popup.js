@@ -228,8 +228,7 @@ async function main() {
     $('moss-enabled').addEventListener('change', async function () {
         const on = $('moss-enabled').checked;
         render_moss_enabled(on);
-        await save_moss_enabled(on);
-        after_toggle(on_page.length > 0);
+        await save_moss_enabled(on); // the service worker reloads the pages it affects
     });
     $('bg-section').hidden = background.length === 0;
     fill($('bg-scripts'), background);

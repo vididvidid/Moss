@@ -119,7 +119,7 @@ export async function fetch_text(url, opts) {
 }
 
 /*
- * list_repo_scripts(link, opts) -> [{ path, url }] for every .js file of a repo (under link.dir)
+ * list_repo_scripts(link, opts) -> [{ path, url }] for every .js / .moss file of a repo (under link.dir)
  */
 export async function list_repo_scripts(link, opts) {
     const options = opts || {};
@@ -141,7 +141,7 @@ export async function list_repo_scripts(link, opts) {
     const prefix = link.dir ? `${link.dir.replace(/\/$/, '')}/` : '';
     const out = [];
     for (const entry of tree) {
-        if (entry.type === 'blob' && entry.path.endsWith('.js') && entry.path.startsWith(prefix)) {
+        if (entry.type === 'blob' && /\.(js|moss)$/.test(entry.path) && entry.path.startsWith(prefix)) {
             out.push({ path: entry.path, url: raw_url(link.owner, link.repo, link.ref, entry.path) });
         }
     }

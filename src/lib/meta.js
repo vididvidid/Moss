@@ -10,6 +10,7 @@
  *     noframes: boolean;
  *     inject: 'wrapped' | 'raw';
  *     strict: boolean;                 // @strict: run the script in strict mode
+ *     format: 'moss' | 'userscript';   // which header the code has (see find_header)
  *     match, include, exclude, exclude_match, grant, require, resource, connect, tag: string[];
  *     use: { name: string; alias: string|null }[];
  *     extra: { [key: string]: string };  // unknown header keys, kept
@@ -29,6 +30,13 @@ const TEXT_KEYS = {
     homepage: 'homepage', homepageurl: 'homepage', website: 'homepage', source: 'homepage',
     supporturl: 'support_url', copyright: 'copyright',
 };
+
+/*
+ * is_list_key(key) -> true for header keys that may repeat (@match, @grant, …)
+ */
+export function is_list_key(key) {
+    return key.toLowerCase() in LIST_KEYS;
+}
 
 const SANDBOX_ALIASES = {
     isolated: 'isolated', dom: 'isolated', sandbox: 'isolated', userscript: 'isolated',
@@ -53,7 +61,7 @@ function meta_create() {
     const meta = {
         name: '', namespace: '', version: '0.1.0', description: '', author: '', icon: '', folder: '',
         copyright: '', update_url: '', download_url: '', homepage: '', support_url: '', sandbox: 'isolated', run_at: 'document_idle',
-        noframes: false, inject: 'wrapped', strict: false, extra: {},
+        noframes: false, inject: 'wrapped', strict: false, format: 'userscript', extra: {},
     };
     for (const key of Object.keys(LIST_KEYS)) {
         meta[LIST_KEYS[key]] = [];
@@ -119,34 +127,133 @@ function apply_key(meta, key, value, warnings) {
     case 'unwrap':
         meta.inject = 'raw'; // Tampermonkey's @unwrap: inject the code as written
         return false;
+    case 'inject-into': {
+        // Violentmonkey: page = the page's own JS, content = a private world, auto = content here.
+        const into = value.toLowerCase();
+        if (into !== 'page' && into !== 'content' && into !== 'auto') {
+            warnings.push(`Unknown @inject-into "${value}" — using "content".`);
+            return false;
+        }
+        meta.sandbox = into === 'page' ? 'page' : 'isolated';
+        return true;
+    }
     default:
         meta.extra[key] = value; // unknown keys are kept, never dropped
         return false;
     }
 }
 
+// The two header formats: Moss's own and the Tampermonkey / Violentmonkey one.
+const USERSCRIPT_RE = /\/\/[ \t]*==UserScript==([\s\S]*?)\/\/[ \t]*==\/UserScript==/;
+const MOSS_RE = /\/\/[ \t]*==Moss==([\s\S]*?)\/\/[ \t]*==\/Moss==/;
+export const MISSING_HEADER = 'Missing the header: "// ==Moss==" … "// ==/Moss==" or "// ==UserScript==" … "// ==/UserScript==".';
+
+/*
+ * find_header(code) -> { format: 'moss' | 'userscript', body, block, start, end } for the
+ * first header in code, or null. Moss's format wins only when it comes first.
+ */
+export function find_header(code) {
+    const text = code || '';
+    const us = USERSCRIPT_RE.exec(text);
+    const moss = MOSS_RE.exec(text);
+    let m = us;
+    let format = 'userscript';
+    if (moss !== null && (us === null || moss.index < us.index)) {
+        m = moss;
+        format = 'moss';
+    }
+    if (m === null) {
+        return null;
+    }
+    return { format: format, body: m[1], block: m[0], start: m.index, end: m.index + m[0].length };
+}
+
+/*
+ * userscript_entries(body) -> [{ key, value }] from "// @key value" lines
+ */
+function userscript_entries(body) {
+    const out = [];
+    for (const line of body.split(/\r?\n/)) {
+        const m = /^\s*\/\/[ \t]*@([\w:.-]+)(?:[ \t]+(.*?))?\s*$/.exec(line);
+        if (m !== null) {
+            out.push({ key: m[1], value: m[2] === undefined ? '' : m[2].trim() });
+        }
+    }
+    return out;
+}
+
+/*
+ * moss_entries(body) -> [{ key, value }] from Moss header lines:
+ *     // key: value          one value
+ *     // key:                a list: each following "//   - item" line is one value
+ *     //   - item
+ *     // # note              ignored
+ */
+function moss_entries(body) {
+    const out = [];
+    let list_key = null;
+    for (const line of body.split(/\r?\n/)) {
+        const text = line.replace(/^\s*\/\/[ \t]?/, '').trimEnd();
+        if (text.trim() === '' || text.trim().startsWith('#')) {
+            continue;
+        }
+        const item = /^\s*-(?:\s+(.*))?$/.exec(text);
+        if (item !== null && list_key !== null) {
+            if (item[1] !== undefined && item[1].trim() !== '') {
+                out.push({ key: list_key, value: item[1].trim() });
+            }
+            continue;
+        }
+        const m = /^\s*([A-Za-z][\w.-]*(?::[A-Za-z-]+)?):(?:[ \t]+(.*))?$/.exec(text);
+        if (m === null) {
+            list_key = null;
+            continue;
+        }
+        const value = m[2] === undefined ? '' : m[2].trim();
+        list_key = value === '' ? m[1] : null;
+        if (value !== '' || !(m[1].toLowerCase() in LIST_KEYS)) {
+            out.push({ key: m[1], value: value });
+        }
+    }
+    return out;
+}
+
+/*
+ * header_entries(code) -> { format, entries: [{ key, value }] } or null without a header.
+ * Keys keep their spelling and order, so a header can be rewritten in the other format.
+ */
+export function header_entries(code) {
+    const header = find_header(code);
+    if (header === null) {
+        return null;
+    }
+    const entries = header.format === 'moss' ? moss_entries(header.body) : userscript_entries(header.body);
+    return { format: header.format, entries: entries };
+}
+
 /*
  * parse_meta(code) -> { meta, errors, warnings }
+ *   meta.format says which header the code has. A Moss header runs in strict mode
+ *   unless it says "strict: off".
  */
 export function parse_meta(code) {
     const meta = meta_create();
     const errors = [];
     const warnings = [];
 
-    const block = /\/\/[ \t]*==UserScript==([\s\S]*?)\/\/[ \t]*==\/UserScript==/.exec(code || '');
-    if (block === null) {
-        errors.push('Missing the "// ==UserScript==" … "// ==/UserScript==" header.');
+    const header = header_entries(code);
+    if (header === null) {
+        errors.push(MISSING_HEADER);
         return { meta: meta, errors: errors, warnings: warnings };
+    }
+    meta.format = header.format;
+    if (header.format === 'moss') {
+        meta.strict = true;
     }
 
     let explicit_sandbox = false;
-    for (const line of block[1].split(/\r?\n/)) {
-        const m = /^\s*\/\/[ \t]*@([\w:.-]+)(?:[ \t]+(.*?))?\s*$/.exec(line);
-        if (m === null) {
-            continue;
-        }
-        const value = m[2] === undefined ? '' : m[2].trim();
-        if (apply_key(meta, m[1].toLowerCase(), value, warnings)) {
+    for (const entry of header.entries) {
+        if (apply_key(meta, entry.key.toLowerCase(), entry.value, warnings)) {
             explicit_sandbox = true;
         }
     }
@@ -199,11 +306,11 @@ export function parse_resources(meta) {
 }
 
 /*
- * meta_block(code) -> the text of the ==UserScript== header (GM_info.scriptMetaStr)
+ * meta_block(code) -> the text of the header, either format (GM_info.scriptMetaStr)
  */
 export function meta_block(code) {
-    const block = /\/\/[ \t]*==UserScript==[\s\S]*?\/\/[ \t]*==\/UserScript==/.exec(code || '');
-    return block === null ? '' : block[0];
+    const header = find_header(code);
+    return header === null ? '' : header.block;
 }
 
 // ---------- URL rules ----------

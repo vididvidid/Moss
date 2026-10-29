@@ -61,7 +61,7 @@ async function with_store(mode, fn) {
 export async function pick_file() {
     const handles = await window.showOpenFilePicker({
         multiple: false,
-        types: [{ description: 'JavaScript', accept: { 'text/javascript': ['.js', '.mjs', '.user.js'] } }],
+        types: [{ description: 'JavaScript', accept: { 'text/javascript': ['.js', '.mjs', '.user.js', '.moss'] } }],
     });
     return handles[0];
 }

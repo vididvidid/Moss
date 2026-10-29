@@ -17,16 +17,18 @@
       <button data-view="docs">Docs</button>
     </nav>
     <span class="spacer"></span>
+    <label class="enabled" title="Switch every script on or off at once. Each script keeps its own Enabled switch.">
+      <input type="checkbox" class="switch" id="moss-switch"> <span id="moss-switch-label">Moss is on</span></label>
     <button class="btn" id="new-script">+ Script</button>
     <button class="btn" id="new-module">+ Module</button>
     <button class="btn" id="import">Import…</button>
-    <input type="file" id="import-file" accept=".js,.user.js,text/javascript" hidden>
+    <input type="file" id="import-file" accept=".js,.user.js,.moss,text/javascript" multiple hidden>
   </header>
 
   <div id="off-banner" class="banner" hidden>
     <strong>Moss is switched off.</strong>
-    No script runs on any page or in the background until you switch it back on.
-    Switch it back on from the Moss toolbar popup. Each script keeps its own Enabled setting.
+    No script runs on any page or in the background until you switch it back on
+    (the switch at the top right, or in the toolbar popup). Each script keeps its own Enabled setting.
   </div>
 
   <div id="banner" class="banner" hidden>
@@ -37,7 +39,10 @@
   </div>
 
   <main id="view-editor" class="view">
-    <aside class="tree" id="tree"></aside>
+    <aside class="tree">
+      <input type="search" id="tree-search" class="tree-search" placeholder="Search scripts and modules…" spellcheck="false" aria-label="Search">
+      <div id="tree"></div>
+    </aside>
     <section class="work" id="work">
       <div class="empty-state" id="empty">
         <h2>Pick a script or module</h2>
@@ -48,13 +53,17 @@
         <div class="toolbar">
           <input id="item-name" class="name-input" spellcheck="false" aria-label="Name">
           <span id="item-chip" class="chip"></span>
+          <span id="item-format" class="chip format" hidden></span>
           <label class="enabled" id="enabled-wrap"><input type="checkbox" class="switch" id="enabled"> Enabled</label>
           <span class="spacer"></span>
           <span id="dirty" class="dirty" hidden>Unsaved</span>
           <button class="btn" id="override" hidden>Override built-in</button>
           <button class="btn" id="update" hidden title="Fetch the latest version from where this script was imported">↻ Update</button>
+          <button class="btn" id="format" title="Auto-format the code (Alt+Shift+F)">Format</button>
+          <button class="btn" id="convert" hidden></button>
+          <button class="btn" id="download-file" hidden title="Save this script as a file">Download</button>
           <button class="btn danger" id="delete">Delete</button>
-          <button class="btn" id="export" title="Build a standalone extension from this script">Export as extension</button>
+          <button class="btn" id="export" title="Build a standalone extension from this script">Export…</button>
           <button class="btn primary" id="save" title="Ctrl+S">Save</button>
         </div>
         <nav class="tabs" id="tabs">
@@ -66,7 +75,10 @@
         <div class="pane" data-pane="code">
           <div class="editor">
             <pre class="gutter" id="gutter" aria-hidden="true"></pre>
-            <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
+            <div class="code-area">
+              <pre class="code-hl" aria-hidden="true"><code id="code-hl"></code></pre>
+              <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea>
+            </div>
           </div>
           <div class="problems" id="problems"></div>
         </div>
@@ -93,6 +105,7 @@
       <p class="hint">Everything (scripts, modules, settings and stored values) as one JSON file.</p>
       <div class="row">
         <button class="btn" id="backup-export">Download backup</button>
+        <button class="btn" id="scripts-zip" title="Each script as a .moss or .user.js file, plus your modules">Download scripts as .zip</button>
         <button class="btn" id="backup-import">Restore from backup…</button>
         <input type="file" id="backup-file" accept=".json,application/json" hidden>
         <button class="btn danger" id="settings-reset">Reset settings to defaults</button>
@@ -107,13 +120,13 @@
       <h1>Moss in five minutes</h1>
 
       <h2>A script</h2>
-      <pre>// ==UserScript==
-// @name         Hide comments
-// @match        https://news.example.com/*
-// @use          moss/dom/wait as wait
-// @strict
-// @use          moss/ui/toast as toast
-// ==/UserScript==
+      <pre>// ==Moss==
+// name:       Hide comments
+// match:      https://news.example.com/*
+// use:
+//   - moss/dom/wait as wait
+//   - moss/ui/toast as toast
+// ==/Moss==
 
 /*
  * hide(el) — remove one comment section
@@ -126,6 +139,21 @@ wait.observe('.comments', hide);
 toast('Comments hidden');</pre>
       <p>Everything a script needs comes from the header. Moss works out which runtime features and modules to include,
         and nothing else gets injected. The <b>Bundle</b> tab shows what was included and why.</p>
+
+      <h2>Two formats: <code>.moss</code> and userscripts</h2>
+      <p>Moss has its own format, <code>.moss</code>, and also takes Tampermonkey and Violentmonkey userscripts exactly as they are.
+        Both use the same keys and run the same way. New scripts you make in Moss use <code>.moss</code>
+        (change it in Settings → New scripts).</p>
+      <table>
+        <tr><th>.moss</th><td><code>// ==Moss==</code> … <code>// ==/Moss==</code>, one <code>key: value</code> per line. A key with
+          several values can list them as <code>- item</code> lines under <code>key:</code>, and <code># …</code> lines are notes.
+          Runs in strict mode unless it says <code>strict: off</code>.</td></tr>
+        <tr><th>userscript</th><td><code>// ==UserScript==</code> … <code>// ==/UserScript==</code> with <code>// @key value</code> lines.
+          Install it from any <code>.user.js</code> link, a file or GitHub. Runs in sloppy mode unless it says <code>@strict</code>.</td></tr>
+      </table>
+      <p>The <b>⇄</b> button in the editor rewrites a header in the other format. It keeps every line, and the script behaves the same
+        (strict mode included). Use it before you share a script with someone on Tampermonkey or Violentmonkey.
+        <b>Download</b> saves a script as <code>.moss</code> or <code>.user.js</code>, and Settings → Backup can download every script as a zip.</p>
 
       <h2>Three sandboxes: <code>@sandbox</code></h2>
       <table>
@@ -140,6 +168,8 @@ toast('Comments hidden');</pre>
         <tr><th>@include / @exclude</th><td>Globs (<code>*</code>) or <code>/regex/</code></td></tr>
         <tr><th>@run-at</th><td>document-start · document-end · document-idle · context-menu (runs when picked from the right-click menu; Chrome 135+)</td></tr>
         <tr><th>@noframes</th><td>Top frame only</td></tr>
+        <tr><th>@inject-into</th><td>Violentmonkey's <code>page</code> / <code>content</code> / <code>auto</code>: the same as <code>@sandbox page</code> / <code>isolated</code></td></tr>
+        <tr><th>@updateURL / @downloadURL</th><td>A script that wasn't imported from a link updates from these when its <code>@version</code> goes up</td></tr>
         <tr><th>@use path [as name]</th><td>Bundle a module; <code>as name</code> makes it a variable</td></tr>
         <tr><th>@require url</th><td>Remote library, downloaded once and cached. Add <code>#sha256=…</code> to check its hash</td></tr>
         <tr><th>@resource name url</th><td>A file for <code>GM_getResourceText(name)</code> / <code>GM_getResourceURL(name)</code>, downloaded once and bundled</td></tr>
@@ -154,7 +184,7 @@ toast('Comments hidden');</pre>
       <p><code>GM_getValue/setValue/deleteValue/listValues</code> · <code>GM_getValues/setValues/deleteValues</code> · <code>GM_addValueChangeListener</code> · <code>GM_addStyle</code> · <code>GM_addElement</code> ·
         <code>GM_xmlhttpRequest</code> · <code>GM_notification</code> · <code>GM_registerMenuCommand</code> (in the toolbar popup and the right-click menu) ·
         <code>GM_openInTab</code> · <code>GM_setClipboard</code> · <code>GM_download</code> · <code>GM_getResourceText/URL</code> · <code>GM_getTab/saveTab/getTabs</code> ·
-        <code>GM_cookie</code> · <code>window.onurlchange</code> · <code>GM_info</code> · <code>GM.*</code> promise versions ·
+        <code>GM_cookie</code> · <code>GM_audio</code> (mute the tab, follow its sound) · <code>window.onurlchange</code> · <code>GM_info</code> · <code>GM.*</code> promise versions ·
         <code>moss.chrome</code> · <code>require()</code>. Top-level <code>await</code> works.</p>
 
       <h2>Modules</h2>
@@ -181,6 +211,11 @@ toast('Comments hidden');</pre>
         runtime pieces, background code, permissions and popup the script actually uses. You can review and edit every one
         of them before downloading.</p>
 
+      <h2>Editor</h2>
+      <p>The code is coloured as you type (Settings → Editor turns it off). <b>Format</b> (or Alt+Shift+F) re-indents the code and tidies
+        the spaces in each line. It never joins or splits lines, and leaves strings, regexes and comments as written.
+        <code>case</code> lines sit at the level of their <code>switch</code>, C style. Settings → Editor can format on every save.</p>
+
       <h2>Editor shortcuts</h2>
       <p>Defaults follow Tampermonkey's key map. Change them in Settings → Editor → Custom shortcuts with lines such as
         <code>Ctrl-Shift-K = delete_line</code>, or <code>Ctrl-R = none</code> to give a key back to the browser.</p>
@@ -199,7 +234,7 @@ toast('Comments hidden');</pre>
           <h3>Features</h3>
           <div id="ex-features"></div>
           <h3>Extras</h3>
-          <label class="check"><input type="checkbox" id="ex-source"> Include the original .user.js and module sources</label>
+          <label class="check"><input type="checkbox" id="ex-source"> Include the original script file and module sources</label>
           <label class="check"><input type="checkbox" id="ex-readme"> Include a README</label>
         </div>
         <div class="col">
@@ -224,7 +259,7 @@ toast('Comments hidden');</pre>
   <dialog id="import-dialog">
     <form method="dialog" class="export import">
       <h2>Import scripts</h2>
-      <p class="hint">Paste a link to a GitHub file, folder or repository, a gist, or any <code>.user.js</code> URL.
+      <p class="hint">Paste a link to a GitHub file, folder or repository, a gist, or any <code>.user.js</code> or <code>.moss</code> URL.
         Moss remembers where each script came from, so it can update it later.</p>
       <div class="row nowrap">
         <input id="im-url" placeholder="https://github.com/you/repo  ·  …/blob/main/script.js  ·  gist link" spellcheck="false" autocomplete="off">

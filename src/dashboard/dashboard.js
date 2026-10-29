@@ -17,18 +17,21 @@
  */
 import { build, plan, slugify } from '../lib/bundler.js';
 import { export_extension } from '../lib/exporter.js';
+import { format_js } from '../lib/js_format.js';
+import { convert_format, file_extension, format_label, render_moss, render_userscript, script_format } from '../lib/formats.js';
 import { fetch_text, list_repo_scripts, parse_source_url } from '../lib/github.js';
-import { parse_meta } from '../lib/meta.js';
+import { MISSING_HEADER, parse_meta } from '../lib/meta.js';
 import { migrate_state, SCHEMA_VERSION } from '../lib/migrate.js';
 import { has_access, load_handle, pick_file, read_file, reconnect, remove_handle, save_handle } from '../lib/local_files.js';
 import { missing_permissions, request_permissions_for } from '../lib/permissions.js';
 import { SCRIPT_OPTIONS, SETTINGS, resolve_settings } from '../lib/settings.js';
 import { load_text, sources_create } from '../lib/sources.js';
 import * as store from '../lib/store.js';
-import { EVERY_OPTIONS, apply_update, check_for_update, sha256, source_create } from '../lib/updater.js';
+import { EVERY_OPTIONS, apply_update, check_for_update, effective_source, header_source, sha256, source_create } from '../lib/updater.js';
 import { zip } from '../lib/zip.js';
 import { BUILTIN_MODULES, FEATURES } from '../shared/features.js';
 import { COMMANDS, event_key, keymap, trim_trailing } from './editor_keys.js';
+import { highlight } from './highlight.js';
 
 const MODULE_NAME_RE = /^[\w-]+(\/[\w.-]+)*$/;
 // Commands that don't change the text, so they also work on read-only built-in modules.
@@ -258,6 +261,9 @@ function apply_appearance() {
     document.documentElement.style.setProperty('--editor-tab', s['editor.tab_size']);
     $('code').classList.toggle('wrap', !!s['editor.wrap']);
     $('code').wrap = s['editor.wrap'] ? 'soft' : 'off';
+    $('code-hl').classList.toggle('wrap', !!s['editor.wrap']);
+    document.querySelector('.editor').classList.toggle('colored', !!s['editor.highlight']);
+    render_highlight();
 }
 
 // ---------- sidebar tree ----------
@@ -317,7 +323,15 @@ function script_leaf(s) {
             select('script', s.id);
         },
     },
-    h('span', { class: `dot${s.enabled ? ' on' : ''}`, title: s.enabled ? 'Enabled' : 'Disabled' }),
+    h('span', {
+        class: `dot${s.enabled ? ' on' : ''}`,
+        title: s.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable',
+        on_click: function (event) {
+            event.stopPropagation();
+            set_script_enabled(s.id, !s.enabled);
+        },
+    }),
+    /^(https:|data:image\/)/.test(s.meta.icon) ? h('img', { class: 'icon', src: s.meta.icon, alt: '', referrerpolicy: 'no-referrer' }) : null,
     h('span', { class: 'label' }, s.meta.name || '(unnamed)'),
     sync_errors[s.id] ? h('span', { class: 'warn', title: sync_errors[s.id] }, '⚠') : null,
     h('span', { class: `chip ${mode}` }, mode));
@@ -361,23 +375,73 @@ function script_folder(s) {
 }
 
 /*
- * render_tree() — redraw the sidebar
+ * script_matches(s, query) -> true if the search box text appears in the script's
+ * name, description, namespace, author, folder, tags or site rules
+ */
+function script_matches(s, query) {
+    if (query === '') {
+        return true;
+    }
+    const m = s.meta;
+    const fields = [m.name, m.description, m.namespace, m.author, m.folder].concat(m.tag, m.match, m.include);
+    for (const field of fields) {
+        if (String(field).toLowerCase().includes(query)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * name_matches(names, query) -> the module names containing query
+ */
+function name_matches(names, query) {
+    const out = [];
+    for (const name of names) {
+        if (query === '' || name.toLowerCase().includes(query)) {
+            out.push(name);
+        }
+    }
+    return out;
+}
+
+/*
+ * set_script_enabled(id, on) — the Enabled switch, from the toolbar or a sidebar dot
+ */
+async function set_script_enabled(id, on) {
+    if (on) {
+        await request_permissions_for(app.scripts[id].code); // first await: keeps the user gesture
+    }
+    app.scripts[id] = await store.patch_script(id, { enabled: on });
+    if (app.sel !== null && app.sel.kind === 'script' && app.sel.id === id) {
+        $('enabled').checked = on;
+    }
+    render_tree();
+}
+
+/*
+ * render_tree() — redraw the sidebar (only what matches the search box)
  */
 function render_tree() {
+    const query = $('tree-search').value.trim().toLowerCase();
     const scripts = [];
     for (const id of Object.keys(app.scripts)) {
-        scripts.push(Object.assign({}, app.scripts[id], { meta: parse_meta(app.scripts[id].code).meta }));
+        const s = Object.assign({}, app.scripts[id], { meta: parse_meta(app.scripts[id].code).meta });
+        if (script_matches(s, query)) {
+            scripts.push(s);
+        }
     }
     scripts.sort(function (a, b) {
         return a.meta.name.localeCompare(b.meta.name);
     });
-    const user_modules = Object.keys(app.modules).sort();
+    const user_modules = name_matches(Object.keys(app.modules).sort(), query);
+    const builtins = name_matches(Object.keys(BUILTIN_MODULES), query);
 
     const nodes = [h('h3', null, `Scripts (${scripts.length})`)];
     if (scripts.length > 0) {
         nodes.push(render_folder(folder_tree(scripts, script_folder), script_leaf));
     } else {
-        nodes.push(h('div', { class: 'empty' }, 'No scripts yet.'));
+        nodes.push(h('div', { class: 'empty' }, query === '' ? 'No scripts yet.' : 'No script matches.'));
     }
     nodes.push(h('h3', null, 'My modules'));
     if (user_modules.length > 0) {
@@ -385,10 +449,10 @@ function render_tree() {
             return module_leaf('module', name);
         }));
     } else {
-        nodes.push(h('div', { class: 'empty' }, 'None yet — “+ Module”.'));
+        nodes.push(h('div', { class: 'empty' }, query === '' ? 'None yet — “+ Module”.' : 'No module matches.'));
     }
     nodes.push(h('h3', null, 'Built-in modules'));
-    nodes.push(render_folder(folder_tree(Object.keys(BUILTIN_MODULES), module_folder), function (name) {
+    nodes.push(render_folder(folder_tree(builtins, module_folder), function (name) {
         return module_leaf('builtin', name);
     }));
     const tree = $('tree');
@@ -453,19 +517,31 @@ function render_toolbar() {
         name.title = 'Change the name with @name in the header';
         $('item-chip').className = `chip ${mode}`;
         $('item-chip').textContent = mode;
+        const format = script_format($('code').value);
+        $('item-format').hidden = format === null;
+        $('item-format').textContent = format === null ? '' : format_label(format);
+        $('convert').hidden = format === null;
+        $('convert').textContent = format === 'moss' ? '⇄ Userscript' : '⇄ .moss';
+        $('convert').title = format === 'moss'
+            ? 'Rewrite the header as "// ==UserScript==" (for Tampermonkey / Violentmonkey)'
+            : 'Rewrite the header in Moss\'s own format';
     } else {
         name.value = id;
         name.readOnly = kind === 'builtin';
         name.title = kind === 'module' ? 'Module path — edit to rename or move to another folder' : 'Built-in module';
         $('item-chip').className = 'chip';
         $('item-chip').textContent = kind === 'builtin' ? 'built-in' : 'module';
+        $('item-format').hidden = true;
+        $('convert').hidden = true;
     }
-    const has_source = s !== null && !!s.source;
+    const src = s !== null ? effective_source(s, app.settings) : null;
     $('enabled-wrap').hidden = kind !== 'script';
     $('enabled').checked = s !== null && !!s.enabled;
     $('export').hidden = kind !== 'script';
-    $('update').hidden = !has_source;
-    $('update').title = has_source ? `Fetch the latest version from ${s.source.label || s.source.url}` : '';
+    $('download-file').hidden = kind === 'builtin';
+    $('format').hidden = kind === 'builtin';
+    $('update').hidden = src === null;
+    $('update').title = src !== null ? `Fetch the latest version from ${src.label || src.url}` : '';
     $('update').textContent = is_local(s) ? '↻ Reload file' : '↻ Update';
     $('save').hidden = kind === 'builtin';
     $('delete').hidden = kind === 'builtin';
@@ -493,10 +569,83 @@ function render_tabs() {
     }
 }
 
+let highlight_frame = 0;
+
 /*
- * update_gutter() — line numbers next to the editor
+ * render_highlight() — recolour the copy of the code shown under the textarea
+ */
+function render_highlight() {
+    highlight_frame = 0;
+    if (!app.settings['editor.highlight']) {
+        $('code-hl').textContent = '';
+        return;
+    }
+    const code = $('code').value;
+    // A trailing newline needs something after it, or the copy is one line short.
+    $('code-hl').innerHTML = highlight(code) + (code.endsWith('\n') ? ' ' : '');
+    sync_highlight_scroll();
+}
+
+/*
+ * schedule_highlight() — recolour once before the next frame, however often it is asked
+ */
+function schedule_highlight() {
+    if (highlight_frame === 0) {
+        highlight_frame = requestAnimationFrame(render_highlight);
+    }
+}
+
+/*
+ * sync_highlight_scroll() — keep the coloured copy exactly under the textarea's text
+ */
+function sync_highlight_scroll() {
+    const el = $('code');
+    const copy = $('code-hl');
+    copy.style.transform = `translate(${-el.scrollLeft}px, ${-el.scrollTop}px)`;
+    copy.style.width = app.settings['editor.wrap'] ? `${el.clientWidth}px` : '';
+    $('gutter').scrollTop = el.scrollTop;
+}
+
+/*
+ * format_editor(quiet) — auto-format the editor's code as one undoable edit
+ *   quiet: say nothing when it was already formatted (format on save)
+ */
+function format_editor(quiet) {
+    if (app.sel === null || app.sel.kind === 'builtin') {
+        return;
+    }
+    const el = $('code');
+    const before = el.value;
+    const line = before.slice(0, el.selectionStart).split('\n').length - 1;
+    const tabs = app.settings['editor.indent_with'] === 'tabs';
+    const after = format_js(before, {
+        indent: tabs ? '\t' : ' '.repeat(app.settings['editor.tab_size'] || 4),
+        spacing: app.settings['editor.format_spacing'] !== false,
+        max_blank: Math.max(0, Number(app.settings['editor.format_blank_lines'])),
+    });
+    if (after === before) {
+        if (!quiet) {
+            toast('Already formatted');
+        }
+        return;
+    }
+    replace_code(after);
+    // Put the caret back on the same line, after its indent.
+    const lines = after.split('\n');
+    const n = Math.min(line, lines.length - 1);
+    let at = 0;
+    for (let i = 0; i < n; i++) {
+        at += lines[i].length + 1;
+    }
+    at += lines[n].length - lines[n].trimStart().length;
+    el.setSelectionRange(at, at);
+}
+
+/*
+ * update_gutter() — line numbers next to the editor (and its colours, which follow the text)
  */
 function update_gutter() {
+    schedule_highlight();
     const count = $('code').value.split('\n').length;
     let text = '';
     for (let i = 1; i <= count; i++) {
@@ -517,6 +666,9 @@ function editor_ctx() {
             if (app.sel !== null && app.sel.kind !== 'builtin') {
                 save();
             }
+        },
+        format: function () {
+            format_editor(false);
         },
         ask: function (question, value) {
             if (value === null) {
@@ -542,6 +694,16 @@ function on_editor_key(event) {
     }
     event.preventDefault();
     COMMANDS[command].run(editor_ctx());
+}
+
+/*
+ * color_docs() — syntax-colour the code samples in Docs (once)
+ */
+function color_docs() {
+    for (const pre of document.querySelectorAll('.docs pre:not(.colored)')) {
+        pre.innerHTML = highlight(pre.textContent);
+        pre.classList.add('colored');
+    }
 }
 
 /*
@@ -631,6 +793,9 @@ async function save_module(code) {
  * save() — save the editor (Ctrl+S)
  */
 async function save() {
+    if (app.settings['editor.format_on_save'] && app.sel.kind !== 'builtin') {
+        format_editor(true);
+    }
     if (app.settings['editor.trim_trailing'] && trim_trailing($('code').value) !== $('code').value) {
         const at = $('code').selectionStart;
         $('code').value = trim_trailing($('code').value);
@@ -721,16 +886,64 @@ async function override_builtin() {
 async function toggle_enabled() {
     const on = $('enabled').checked;
     if (on) {
-        await request_permissions_for($('code').value);
+        await request_permissions_for($('code').value); // first await: keeps the user gesture
     }
     app.scripts[app.sel.id] = await store.patch_script(app.sel.id, { enabled: on });
     render_tree();
 }
 
 /*
- * render_moss_enabled() — the "switched off" banner (the switch itself is in the popup)
+ * replace_code(code) — put new text in the editor as one undoable edit
+ */
+function replace_code(code) {
+    const el = $('code');
+    if (el.value === code) {
+        return;
+    }
+    const top = el.scrollTop;
+    el.focus();
+    el.select();
+    if (!document.execCommand('insertText', false, code)) {
+        el.value = code;
+    }
+    el.scrollTop = top;
+    el.dispatchEvent(new Event('input'));
+}
+
+/*
+ * convert_selected() — the ⇄ button: rewrite the header in the other format
+ */
+function convert_selected() {
+    const code = $('code').value;
+    const to = script_format(code) === 'moss' ? 'userscript' : 'moss';
+    try {
+        replace_code(convert_format(code, to));
+        toast(`Header rewritten as ${format_label(to)} — Save to keep it`);
+    } catch (e) {
+        toast(e.message, 'error');
+    }
+}
+
+/*
+ * download_selected() — save the open script or module as a file
+ */
+function download_selected() {
+    const code = $('code').value;
+    if (app.sel.kind === 'script') {
+        const format = script_format(code);
+        const name = slugify(parse_meta(code).meta.name) + file_extension(format === null ? 'userscript' : format);
+        download(new Blob([code], { type: 'text/javascript' }), name);
+        return;
+    }
+    download(new Blob([code], { type: 'text/javascript' }), `${slugify(app.sel.id)}.js`);
+}
+
+/*
+ * render_moss_enabled() — the global switch in the top bar and the "switched off" banner
  */
 function render_moss_enabled() {
+    $('moss-switch').checked = app.enabled;
+    $('moss-switch-label').textContent = app.enabled ? 'Moss is on' : 'Moss is off';
     $('off-banner').hidden = app.enabled;
 }
 
@@ -744,6 +957,7 @@ function template(site) {
     if (s['new.template'] && s['new.template'].trim() !== '') {
         return fill_template(s['new.template'], site);
     }
+    const moss = s['new.format'] !== 'userscript';
     const lines = [
         ['name', 'New script'], ['namespace', s['new.namespace']], ['version', '0.1.0'], ['description', 'What does it do?'],
     ];
@@ -759,7 +973,9 @@ function template(site) {
     if (s['new.run_at'] !== 'document-idle') {
         lines.push(['run-at', s['new.run_at']]);
     }
-    lines.push(['strict', '']);
+    if (!moss) {
+        lines.push(['strict', '']); // a .moss script is strict already
+    }
     let toast_alias = null;
     for (const use of s['new.uses']) {
         lines.push(['use', use]);
@@ -768,12 +984,13 @@ function template(site) {
             toast_alias = m[1];
         }
     }
-    let header = '';
+    const entries = [];
     for (const line of lines) {
-        header += `// @${line[0].padEnd(12)} ${line[1]}`.trimEnd() + '\n';
+        entries.push({ key: line[0], value: line[1] });
     }
+    const header = moss ? render_moss(entries) : render_userscript(entries);
     const body = toast_alias !== null ? `${toast_alias}('Hello from Moss 👋');\n` : 'console.log(\'Hello from Moss 👋\');\n';
-    return `// ==UserScript==\n${header}// ==/UserScript==\n\n${body}`;
+    return `${header}\n\n${body}`;
 }
 
 /*
@@ -961,10 +1178,8 @@ async function fetch_item(file, token) {
     try {
         const code = await fetch_text(file.url, { token: token });
         const parsed = parse_meta(code);
-        for (const error of parsed.errors) {
-            if (error.startsWith('Missing')) {
-                return Object.assign({}, file, { error: 'Not a userscript (no // ==UserScript== header).' });
-            }
+        if (parsed.errors.indexOf(MISSING_HEADER) >= 0) {
+            return Object.assign({}, file, { error: 'Not a script (no "// ==UserScript==" or "// ==Moss==" header).' });
         }
         const dup = already_imported(file.url);
         return Object.assign({}, file, {
@@ -993,10 +1208,10 @@ async function lookup() {
                 files.push(Object.assign({}, f, { label: `${link.owner}/${link.repo}/${f.path}` }));
             }
             if (files.length === 0) {
-                throw new Error(`No .js files in ${link.owner}/${link.repo}${link.dir ? `/${link.dir}` : ''}.`);
+                throw new Error(`No .js or .moss files in ${link.owner}/${link.repo}${link.dir ? `/${link.dir}` : ''}.`);
             }
             if (files.length > 60) {
-                throw new Error(`${files.length} .js files found — link to a folder (…/tree/main/folder) to narrow it down.`);
+                throw new Error(`${files.length} script files found — link to a folder (…/tree/main/folder) to narrow it down.`);
             }
         } else {
             files = [{ url: link.url, label: link.label }];
@@ -1044,18 +1259,17 @@ async function import_picked() {
 }
 
 /*
- * import_code(code) — add a script from a local file
+ * import_code(code, name) -> true if a script was added from a local file
  */
-async function import_code(code) {
+async function import_code(code, name) {
     const parsed = parse_meta(code);
-    for (const error of parsed.errors) {
-        if (error.startsWith('Missing')) {
-            toast('That file has no "// ==UserScript==" header.', 'error');
-            return;
-        }
+    if (parsed.errors.indexOf(MISSING_HEADER) >= 0) {
+        toast(`${name || 'That file'} has no "// ==UserScript==" or "// ==Moss==" header.`, 'error');
+        return false;
     }
     await create_script(code);
     toast(`Imported "${parsed.meta.name}" (disabled — review it, then enable)`);
+    return true;
 }
 
 // ---------- scripts linked to a local file ----------
@@ -1376,6 +1590,21 @@ function update_status_text(u) {
  */
 function source_box(s) {
     const src = s.source;
+    const from_header = header_source(s, app.settings);
+    if (!src && from_header !== null) {
+        return h('div', { class: 'source-box' },
+            h('h3', null, 'Source'),
+            h('div', { class: 'row' }, h('code', null, from_header.url)),
+            h('p', { class: 'hint' }, 'From the script\'s own @updateURL / @downloadURL. Moss checks it with the default interval '
+                + '(Settings → Updates) and installs it only when @version goes up.'),
+            h('div', { class: 'row' }, h('button', {
+                class: 'btn',
+                on_click: function () {
+                    update_from_source(current());
+                },
+            }, '↻ Update now')),
+            h('div', { class: 'hint' }, update_status_text(app.updates[s.id])));
+    }
     if (!src) {
         const input = h('input', { type: 'text', placeholder: 'https://github.com/you/repo/blob/main/script.js' });
         return h('div', { class: 'source-box' },
@@ -1610,7 +1839,9 @@ async function render_bundle(given) {
     async function show_generated() {
         try {
             const code = await build(p, { sources: sources(), script: draft, token: '•••', settings: app.settings });
-            $('generated').replaceChildren(h('p', { class: 'hint' }, `${format_size(byte_size(code))} injected`), h('pre', { class: 'generated' }, code));
+            const pre = h('pre', { class: 'generated' });
+            pre.innerHTML = highlight(code);
+            $('generated').replaceChildren(h('p', { class: 'hint' }, `${format_size(byte_size(code))} injected`), pre);
         } catch (e) {
             $('generated').replaceChildren(h('p', { class: 'error' }, e.message));
         }
@@ -1801,6 +2032,39 @@ async function export_backup() {
     }
     const name = `moss-backup-${new Date().toISOString().slice(0, 10)}.json`;
     download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), name);
+}
+
+/*
+ * export_scripts_zip() — every script as its own file (.moss or .user.js, by its header)
+ * plus user modules under modules/, in one .zip; each file installs in Moss, and the
+ * .user.js ones in Tampermonkey or Violentmonkey too
+ */
+function export_scripts_zip() {
+    const files = [];
+    const used = {};
+    for (const id of Object.keys(app.scripts)) {
+        const code = app.scripts[id].code;
+        const format = script_format(code);
+        const meta = parse_meta(code).meta;
+        const folder = meta.folder.replace(/^\/+|\/+$/g, '');
+        let path = `scripts/${folder === '' ? '' : `${folder}/`}${slugify(meta.name)}`;
+        if (used[path]) {
+            used[path]++;
+            path += `-${used[path]}`;
+        } else {
+            used[path] = 1;
+        }
+        files.push({ path: path + file_extension(format === null ? 'userscript' : format), content: code });
+    }
+    for (const name of Object.keys(app.modules)) {
+        files.push({ path: `modules/${name}.js`, content: app.modules[name].code });
+    }
+    if (files.length === 0) {
+        toast('There are no scripts to export yet.');
+        return;
+    }
+    const name = `moss-scripts-${new Date().toISOString().slice(0, 10)}.zip`;
+    download(new Blob([zip(files)], { type: 'application/zip' }), name);
 }
 
 /*
@@ -2062,11 +2326,14 @@ function wire() {
         }
         if (view === 'docs') {
             render_key_docs();
+            color_docs();
         }
     });
 
-    $('code').addEventListener('scroll', function () {
-        $('gutter').scrollTop = $('code').scrollTop;
+    $('code').addEventListener('scroll', sync_highlight_scroll);
+    new ResizeObserver(sync_highlight_scroll).observe($('code'));
+    $('format').addEventListener('click', function () {
+        format_editor(false);
     });
     $('code').addEventListener('input', function () {
         app.dirty = true;
@@ -2101,6 +2368,14 @@ function wire() {
     $('enabled').addEventListener('change', toggle_enabled);
     $('delete').addEventListener('click', delete_selected);
     $('override').addEventListener('click', override_builtin);
+    $('convert').addEventListener('click', convert_selected);
+    $('tree-search').addEventListener('input', debounce(render_tree, 120));
+    $('moss-switch').addEventListener('change', async function () {
+        app.enabled = $('moss-switch').checked;
+        render_moss_enabled();
+        await store.save_moss_enabled(app.enabled); // the service worker reloads affected pages
+    });
+    $('download-file').addEventListener('click', download_selected);
     $('update').addEventListener('click', function () {
         update_from_source(current());
     });
@@ -2135,11 +2410,17 @@ function wire() {
         import_picked();
     });
     $('import-file').addEventListener('change', async function () {
-        const file = $('import-file').files[0];
-        if (file) {
-            await import_code(await file.text());
-        }
+        const files = Array.prototype.slice.call($('import-file').files);
         $('import-file').value = '';
+        let count = 0;
+        for (const file of files) {
+            if (await import_code(await file.text(), file.name)) {
+                count++;
+            }
+        }
+        if (files.length > 1) {
+            toast(`Imported ${count} of ${files.length} files (disabled — review them, then enable)`);
+        }
     });
     $('check-all').addEventListener('click', check_all);
 
@@ -2147,6 +2428,7 @@ function wire() {
     $('values-clear').addEventListener('click', clear_values);
     $('settings-reset').addEventListener('click', reset_settings);
     $('backup-export').addEventListener('click', export_backup);
+    $('scripts-zip').addEventListener('click', export_scripts_zip);
     $('backup-import').addEventListener('click', function () {
         $('backup-file').click();
     });

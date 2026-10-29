@@ -38,6 +38,9 @@ code { font-family: var(--mono); font-size: 12px; background: var(--hover); padd
 .tree .dot.on { background: var(--accent); }
 .tree .warn { color: var(--danger); }
 .tree .empty { color: var(--muted); padding: 2px 10px; font-size: 12px; }
+.tree-search { width: 100%; font: inherit; color: var(--fg); background: var(--bg-2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; margin: 0 0 4px; }
+.tree .dot { cursor: pointer; } .tree .dot:hover { outline: 2px solid var(--accent-soft); }
+.tree .icon { width: 14px; height: 14px; flex: none; object-fit: contain; }
 
 /* work area */
 .work { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -59,8 +62,19 @@ code { font-family: var(--mono); font-size: 12px; background: var(--hover); padd
 /* editor */
 .editor { flex: 1; min-height: 0; display: flex; background: var(--bg); font: var(--editor-size, 13px)/1.5 var(--mono); }
 .gutter { margin: 0; padding: 10px 8px 10px 12px; text-align: right; color: var(--muted); opacity: .6; user-select: none; overflow: hidden; background: var(--bg-2); border-right: 1px solid var(--border); font: inherit; min-width: 44px; }
-#code { flex: 1; border: 0; resize: none; outline: none; padding: 10px 12px; background: var(--bg); color: var(--fg); font: inherit; tab-size: var(--editor-tab, 2); white-space: pre; overflow: auto; }
-#code.wrap { white-space: pre-wrap; }
+.code-area { position: relative; flex: 1; min-width: 0; overflow: hidden; background: var(--bg); }
+#code { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; resize: none; outline: none; padding: 10px 12px; background: transparent; color: var(--fg); font: inherit; tab-size: var(--editor-tab, 2); white-space: pre; overflow: auto; overflow-wrap: normal; }
+#code.wrap { white-space: pre-wrap; overflow-wrap: break-word; }
+/* syntax colouring: the textarea's text is transparent over a coloured copy */
+.code-hl { position: absolute; inset: 0; margin: 0; overflow: hidden; pointer-events: none; font: inherit; }
+.code-hl code { display: block; padding: 10px 12px; margin: 0; font: inherit; background: none; border-radius: 0; color: var(--fg); tab-size: var(--editor-tab, 2); white-space: pre; overflow-wrap: normal; will-change: transform; }
+.code-hl code.wrap { white-space: pre-wrap; overflow-wrap: break-word; }
+.editor.colored #code { color: transparent; -webkit-text-fill-color: transparent; caret-color: var(--fg); }
+.editor:not(.colored) .code-hl { display: none; }
+.t-kw { color: var(--syn-kw); font-weight: 600; } .t-str { color: var(--syn-str); } .t-num, .t-lit { color: var(--syn-num); }
+.t-com { color: var(--syn-com); font-style: italic; } .t-re { color: var(--syn-re); } .t-fn { color: var(--syn-fn); }
+.t-prop { color: var(--syn-prop); } .t-api { color: var(--syn-api); font-weight: 600; } .t-br { color: var(--syn-br); }
+.t-meta-mark { color: var(--syn-com); font-weight: 600; } .t-meta-key { color: var(--syn-kw); font-weight: 600; } .t-meta-val { color: var(--syn-str); }
 .problems { max-height: 30%; overflow: auto; background: var(--bg); border-top: 1px solid var(--border); font-size: 12px; }
 .problems:empty { display: none; }
 .problems div { padding: 4px 14px; }
@@ -92,6 +106,7 @@ textarea.json { font-family: var(--mono); font-size: 12px; min-height: 260px; }
 .reasons li { padding: 3px 0; display: flex; gap: 8px; align-items: baseline; }
 .reasons li .why { color: var(--muted); font-size: 12px; }
 .reasons li .size { margin-left: auto; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+pre.generated, pre.colored { white-space: pre; }
 pre.generated { font: 12px/1.45 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; max-height: 480px; overflow: auto; }
 
 /* docs */
